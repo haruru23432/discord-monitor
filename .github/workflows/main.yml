@@ -1,17 +1,228 @@
-name: Discord Test
+name: Windows 11 Monitor
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-11-monitor
+  cancel-in-progress: false
 
 jobs:
-  discord-test:
+  monitor:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
     steps:
-      - name: Send test message to Discord
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check Windows 11 important issues
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK_WINDOWS: ${{ secrets.DISCORD_WEBHOOK_WINDOWS }}
+        shell: bash
         run: |
-          curl -H "Content-Type: application/json" \
-            -d '{"content":"✅ Discord監視システムのテスト通知です。"}' \
-            "$DISCORD_WEBHOOK_URL"
+          node --input-type=module <<'WINDOWS_MONITOR'
+          import { createHash } from 'node:crypto';
+          import { appendFileSync } from 'node:fs';
+          import { pathToFileURL } from 'node:url';
+          
+          export const SOURCES = [
+            ...['23h2', '24h2', '25h2', '26h1'].map(v => ({
+              id: `microsoft-${v}`, official: true,
+              url: `https://learn.microsoft.com/en-us/windows/release-health/status-windows-11-${v}`
+            })),
+            { id: 'bleepingcomputer', official: false, url: 'https://www.bleepingcomputer.com/feed/' }
+          ];
+          const digest = s => createHash('sha256').update(s).digest('hex');
+          export function clean(s) {
+            return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<[^>]*>/g, ' ')
+              .replace(/&#(x[\da-f]+|\d+);/gi, (_, n) => {
+                const code = n[0].toLowerCase() === 'x' ? parseInt(n.slice(1), 16) : Number(n);
+                return code <= 0x10ffff ? String.fromCodePoint(code) : '';
+              })
+              .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, n) => ({amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:' '})[n])
+              .replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+          }
+          export function severity(title) {
+            const rules = [
+              ['起動不能・再起動障害', /boot loop|unbootable|fail\w* to boot|unable to boot|cannot boot|won.t boot|restart loop|unexpected\w* restart/i],
+              ['ブルースクリーン・システム停止', /blue screen|black screen|BSOD|stop error|system\w* crash|devices?.{0,35}(?:freeze|unresponsive)/i],
+              ['データ損失・破損', /data loss|data corruption|corrupt\w*.{0,25}(?:files?|data)|(?:files?|data).{0,25}(?:deleted|lost|corrupt)/i],
+              ['更新のインストール障害', /(?:updates?|install\w*).{0,45}(?:fail|blocked|error)|(?:fail|unable).{0,35}(?:install|updat)/i],
+              ['ネットワーク接続障害', /(?:wi-fi|wifi|internet|network|VPN).{0,40}(?:fail|broken|disconnect|unable|connectivity issues)|(?:breaks?|disables?).{0,30}(?:wi-fi|wifi|internet|network|VPN)/i],
+              ['アプリ・ゲームの動作停止', /(?:apps?|applications?|games?|Outlook|Teams).{0,55}(?:crash|unresponsive|fail to (?:launch|open)|stop working)|(?:breaks?|crashes?).{0,30}(?:apps?|games?)/i],
+              ['悪用確認済みの脆弱性', /actively exploited|exploited in the wild|under active (?:attack|exploitation)/i]
+            ];
+            return rules.find(([, r]) => r.test(title))?.[0] || null;
+          }
+          export function officialItems(html, source) {
+            const tables = [...html.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)].map(m => m[0]);
+            const table = tables.find(t => /Summary/i.test(clean(t)) && /Originating update/i.test(clean(t)) && /Last updated/i.test(clean(t)));
+            if (!table) {
+              if (/There are no (?:active )?known issues/i.test(clean(html))) return [];
+              throw new Error('official page layout not recognized');
+            }
+            const result = [];
+            for (const row of table.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+              const cells = [...row[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(m => m[1]);
+              if (!cells.length) continue;
+              if (cells.length !== 4) throw new Error('unexpected official row');
+              const link = cells[0].match(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
+              if (!link) throw new Error('official issue link missing');
+              const url = new URL(link[1].replace(/&amp;/g, '&'), source.url);
+              if (url.hostname !== 'learn.microsoft.com') throw new Error('unexpected official link');
+              const title = clean(link[2]);
+              result.push({ id: url.href, title, url: url.href, text: clean(cells[0] + ' ' + cells[1]),
+                resolved: /^Resolved/i.test(clean(cells[2])), source: source.id, official: true });
+            }
+            if (!result.length) throw new Error('official table unexpectedly empty');
+            return result;
+          }
+          export function newsItems(xml, source, now) {
+            if (!/<rss\b/i.test(xml) || !/<\/rss>/i.test(xml)) throw new Error('invalid RSS');
+            const raw = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)];
+            if (!raw.length) throw new Error('empty RSS');
+            return raw.flatMap(m => {
+              const field = name => clean(m[1].match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, 'i'))?.[1] || '');
+              const title = field('title'), link = field('link');
+              const published = Date.parse(field('pubDate'));
+              if (!title || !link || !Number.isFinite(published)) throw new Error('invalid RSS item');
+              const url = new URL(link);
+              if (url.protocol !== 'https:' || !['www.bleepingcomputer.com','bleepingcomputer.com'].includes(url.hostname)) throw new Error('unexpected news link');
+              url.search = ''; url.hash = '';
+              const description = field('description');
+              if (!/windows\s*11/i.test(title + ' ' + description)) return [];
+              return [{ id: url.href, title, url: url.href, text: title + ' ' + description,
+                stale: published < now - 7 * 86400000 || published > now + 86400000,
+                source: source.id, official: false }];
+            });
+          }
+          export function aliases(item) {
+            const title = item.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+            return ['url:' + digest(item.url), 'title:' + digest(title)];
+          }
+          export function isDuplicate(item, incidents) {
+            const keys = aliases(item), category = severity(item.title);
+            const kbs = [...item.text.toUpperCase().matchAll(/KB\d{6,8}/g)].map(m => m[0]);
+            const words = new Set(item.title.toLowerCase().match(/[a-z]{4,}/g) || []);
+            return incidents.some(old => {
+              if (old.keys.some(k => keys.includes(k))) return true;
+              const other = new Set(old.words);
+              const shared = [...words].filter(w => other.has(w)).length;
+              const union = new Set([...words, ...other]).size;
+              return category === old.category && kbs.some(k => old.kbs.includes(k)) && shared / (union || 1) >= 0.35;
+            });
+          }
+          export function plan(state, batches, now) {
+            const next = structuredClone(state), pending = [];
+            for (const {source, items} of batches) {
+              const baseline = !next.sources[source.id];
+              next.sources[source.id] ||= { seen: {} };
+              const seen = next.sources[source.id].seen;
+              for (const item of items) {
+                const id = digest(item.id);
+                if (seen[id]) continue;
+                seen[id] = new Date(now).toISOString();
+                if (baseline || item.resolved || item.stale || !severity(item.title)) continue;
+                if (isDuplicate(item, [...next.incidents, ...pending.map(p => p.incident)])) continue;
+                const incident = { keys: aliases(item), category: severity(item.title),
+                  kbs: [...item.text.toUpperCase().matchAll(/KB\d{6,8}/g)].map(m => m[0]),
+                  words: item.title.toLowerCase().match(/[a-z]{4,}/g) || [],
+                  url: item.url, title: item.title, status: 'reserved', at: new Date(now).toISOString() };
+                // Bound each run; leave excess candidates unseen so the next run can deliver them.
+                if (pending.length >= 5) { delete seen[id]; continue; }
+                pending.push({item, incident});
+              }
+            }
+            return {next, pending};
+          }
+          async function fetchText(url) {
+            const response = await fetch(url, {signal: AbortSignal.timeout(30000),
+              headers: {'User-Agent':'Windows11Monitor/1.0', 'Accept':'text/html, application/rss+xml, application/xml'}});
+            if (!response.ok) throw new Error(`source HTTP ${response.status}`);
+            const data = await response.text();
+            if (data.length > 5000000) throw new Error('source too large');
+            return data;
+          }
+          export async function main() {
+            const env = process.env;
+            if (!env.GH_TOKEN || !env.GITHUB_REPOSITORY || !env.DISCORD_WEBHOOK_WINDOWS) throw new Error('Required secret or GitHub token is missing');
+            const hook = new URL(env.DISCORD_WEBHOOK_WINDOWS);
+            if (hook.protocol !== 'https:' || hook.hostname !== 'discord.com' || !/^\/api\/webhooks\/\d+\/[^/]+$/.test(hook.pathname)) throw new Error('Invalid Discord webhook URL');
+            hook.searchParams.set('wait', 'true');
+            const api = `https://api.github.com/repos/${env.GITHUB_REPOSITORY}`;
+            async function github(path, method = 'GET', body, allow404 = false) {
+              const response = await fetch(api + path, {method, redirect:'error', signal:AbortSignal.timeout(30000),
+                headers:{Authorization:`Bearer ${env.GH_TOKEN}`, Accept:'application/vnd.github+json', 'Content-Type':'application/json', 'X-GitHub-Api-Version':'2022-11-28'},
+                ...(body ? {body:JSON.stringify(body)} : {})});
+              if (allow404 && response.status === 404) return null;
+              if (!response.ok) throw new Error(`GitHub ${method} failed: HTTP ${response.status}`);
+              return response.json();
+            }
+            // State lives in the default branch. No checkout, cache eviction, or extra credentials.
+            const repo = await github('');
+            if (env.GITHUB_REF !== `refs/heads/${repo.default_branch}`) throw new Error('Run only on the default branch');
+            const branch = repo.default_branch;
+            const statePath = '/contents/.monitor/windows-state.json';
+            const stored = await github(statePath + '?ref=' + encodeURIComponent(branch), 'GET', undefined, true);
+            let sha = stored?.sha;
+            let state = stored ? JSON.parse(Buffer.from(stored.content, 'base64').toString('utf8')) : {version:1, sources:{}, incidents:[]};
+            if (state.version !== 1 || !state.sources || !Array.isArray(state.incidents)) throw new Error('Invalid saved state; refusing to reset');
+            // An unresolved reservation means a previous delivery was interrupted. Stop instead of re-sending.
+            if (state.incidents.some(i => ['reserved','unknown'].includes(i.status))) throw new Error('Previous delivery is uncertain. Inspect .monitor/windows-state.json before continuing; no automatic resend');
+            async function save(next) {
+              const result = await github(statePath, 'PUT', {message:'Update Windows monitor state [skip ci]', branch,
+                content:Buffer.from(JSON.stringify(next, null, 2) + '\n').toString('base64'), ...(sha ? {sha} : {})});
+              sha = result.content.sha; state = next;
+            }
+            const batches = [], failures = [];
+            // Require every official source to succeed before processing news, so official reporting wins.
+            for (const source of SOURCES) {
+              try {
+                const raw = await fetchText(source.url);
+                const items = source.official ? officialItems(raw, source) : newsItems(raw, source, Date.now());
+                batches.push({source, items});
+                console.log(`${source.id}: ${items.length} items${state.sources[source.id] ? '' : ' (initial baseline; no alerts)'}`);
+              } catch {
+                failures.push(source.id);
+                if (source.official) throw new Error(`Official source unavailable or changed: ${source.id}. No notifications sent`);
+              }
+            }
+            const {next, pending} = plan(state, batches, Date.now());
+            // Reserve all candidates durably BEFORE sending, favouring duplicate prevention over retry.
+            next.incidents.push(...pending.map(p => p.incident));
+            if (JSON.stringify(next) !== JSON.stringify(state)) await save(next);
+            for (const {item, incident} of pending) {
+              let status = 'unknown';
+              try {
+                const response = await fetch(hook, {method:'POST', redirect:'error', signal:AbortSignal.timeout(30000),
+                  headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+                    allowed_mentions:{parse:[]}, embeds:[{
+                      title: item.title.slice(0, 240), url:item.url,
+                      description:`Windows 11 重要情報\n判定：${incident.category}\n${item.official ? 'Microsoft公式の既知の問題' : '外部報道（Microsoft公式による確認は未判定）'}\n対象バージョンと対処方法はリンク先で確認してください。`,
+                      color:item.official ? 15105570 : 15844367,
+                      footer:{text:`情報源：${item.source} ／ 自動ルール判定`}
+                    }]
+                  })});
+                if (response.ok) {
+                  const message = await response.json();
+                  if (message.id) { incident.messageId = message.id; status = 'sent'; }
+                }
+              } catch { /* The endpoint may have accepted the message: never automatically resend. */ }
+              incident.status = status;
+              await save(next);
+              if (status !== 'sent') throw new Error('Discord delivery failed or is uncertain; automatic resend stopped. Inspect saved state');
+            }
+            const summary = `Windows monitor completed. Notifications: ${pending.length}. Sources: ${batches.length}.\n`;
+            console.log(summary);
+            if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, summary);
+            if (failures.length) throw new Error('Auxiliary source failed: ' + failures.join(', '));
+          }
+          await main().catch(error => { console.error("::error::" + error.message); process.exitCode = 1; });
+          WINDOWS_MONITOR
