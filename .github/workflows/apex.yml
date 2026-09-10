@@ -1,1 +1,340 @@
+name: Apex Legends Monitor
 
+on:
+  schedule:
+    - cron: '47 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: 'Discordへ接続テストだけ送信する'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apex-important-news-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check important Apex news
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_WEBHOOK_APEX: ${{ secrets.DISCORD_WEBHOOK_APEX }}
+          TEST_NOTIFICATION: ${{ inputs.test_notification || false }}
+        shell: python
+        run: |
+          import base64
+          import hashlib
+          import html
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+
+          BRANCH = "apex-monitor-state"
+          PATH = "apex-state.json"
+          UA = "ApexImportantNewsMonitor/1.0"
+
+
+          def request(url, data=None, headers=None, method=None):
+              body = None if data is None else json.dumps(data).encode("utf-8")
+              req = urllib.request.Request(url, data=body, method=method,
+                  headers={"User-Agent": UA, "Content-Type": "application/json", **(headers or {})})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  return json.load(response)
+
+
+          def plain(value):
+              value = re.sub(r"<[^>]+>|\[[^\]]+\]", " ", value)
+              return re.sub(r"\s+", " ", html.unescape(value)).strip()
+
+
+          def patch_channel(item):
+              if item.get("feedname") != "steam_community_announcements":
+                  return None
+              title = html.unescape(re.sub(r"<[^>]+>", " ", item["title"])).lower()
+              intro = plain(item.get("contents", ""))[:1000].lower()
+              patch = re.search(r"\b(patch(?:\s+notes?)?|hot[ -]?fix|bug[ -]?fix|latest updates?|game updates?|balance updates?)\b|パッチノート|ホットフィックス|不具合修正|バグ修正|最新アップデート", title)
+              # Official event articles can include midseason patch notes in the body.
+              patch_body = re.search(r"\bpatch notes\b|パッチノート", intro)
+              if not (patch or patch_body):
+                  return None
+              if re.search(r"\b(test server|test build|playtest)\b|テスト版", title):
+                  return "テスト版"
+              return "通常サーバー"
+
+
+          def category(item):
+              channel = patch_channel(item)
+              if channel:
+                  return "公式パッチノート（" + channel + "）"
+              title = plain(item["title"]).lower()
+              intro = plain(item.get("contents", ""))[:1600].lower()
+              if re.search(r"\b(weekly|sale|discount|giveaway|codes?|survey|contest|livestream|recap|algs|esports|tournament|championship|merchandise)\b", title):
+                  return None
+              if re.search(r"\b(rumou?r|leak|speculation|wishlist|wish list|concept)\b", title):
+                  return None
+              if re.search(r"\b(new legend|new character|new weapon|new map|meet your new legend)\b|新レジェンド|新武器|新マップ", title):
+                  return "新レジェンド・新武器・新マップ"
+              if re.search(r"\b(collaboration|crossover|collab)\b|apex legends\s*[x×]|コラボ", title):
+                  return "コラボ"
+              if re.search(r"\b(event|limited.time|ltm|takeover|collection event)\b|期間限定|イベント", title):
+                  return "期間限定イベント・モード"
+              if re.search(r"\b(new season|season \d+|midseason|mid-season|major update|new updates|anniversary|roadmap|ranked update|ranked changes|designer.s notes)\b|新シーズン|大型アップデート|ランク変更", title):
+                  return "新シーズン・大型更新・重要な仕様変更"
+              if re.search(r"\b(introducing|introduces|announcing|announce|reveal|releases?|launches?|out now|available now)\b", title + " " + intro[:600]):
+                  if re.search(r"\b(new legend|new weapon|new map|new season)\b", intro[:600]):
+                      return "新シーズン・新レジェンド等"
+                  if re.search(r"\b(collaboration|crossover)\b", intro[:600]):
+                      return "コラボ"
+              return None
+
+
+          def official_references(item):
+              result = set()
+              text = html.unescape(item.get("contents", "")) + " " + item["url"]
+              for url in re.findall(r"https?://[^\s<>\"'\]\)]+", text):
+                  p = urllib.parse.urlsplit(url.rstrip(".,;"))
+                  host = (p.hostname or "").lower()
+                  if host in ("ea.com", "www.ea.com"):
+                      match = re.search(r"/games/apex-legends/(?:apex-legends/)?news/([^/]+)", p.path)
+                      if match:
+                          result.add("official:" + match[1].lower())
+                  if host == "steamcommunity.com":
+                      match = re.search(r"/(?:announcements/detail|detail)/(\d+)", p.path)
+                      if match:
+                          result.add("steam:" + match[1])
+              return result
+
+
+          def keys(item):
+              result = {"gid:" + str(item["gid"])}
+              title = re.sub(r"\W+", "", plain(item["title"]).casefold())
+              channel = patch_channel(item)
+              if channel:
+                  # References to older notes must never suppress a new update.
+                  result.add("patch-url:" + channel + ":" + item["url"].split("?")[0])
+                  day = datetime.fromtimestamp(int(item["date"]), timezone.utc).strftime("%Y-%m-%d")
+                  result.add("patch-title:" + channel + ":" + day + ":" + hashlib.sha256(title.encode()).hexdigest())
+                  return result
+              result.add("title:" + hashlib.sha256(title.encode()).hexdigest())
+              result.update(official_references(item))
+              return result
+
+
+          def make_embed(item, label, is_aux):
+              is_patch = patch_channel(item) is not None
+              title = html.unescape(re.sub(r"<[^>]+>", " ", item["title"]))
+              source = "PC Gamer（公式発表を引用した補助情報）" if is_aux else "Apex公式・Steamニュース"
+              description = ("優先度：最優先\n" if is_patch else "") + "分類：" + label + "\n情報源：" + source
+              description += "\n\n" + ("パッチノートはこちら：" if is_patch else "記事はこちら：") + "\n" + item["url"]
+              return {"title": title[:256], "url": item["url"], "description": description,
+                  "color": 15158332 if is_patch else 11141120,
+                  "timestamp": datetime.fromtimestamp(int(item["date"]), timezone.utc).isoformat()}
+
+
+          def fetch(feed, since):
+              result = []
+              end = int(time.time()) + 1
+              for _ in range(10):
+                  query = urllib.parse.urlencode({"appid": 1172470, "count": 100,
+                      "maxlength": 0, "feeds": feed, "enddate": end, "format": "json"})
+                  obj = request("https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?" + query)
+                  app = obj["appnews"]
+                  if int(app["appid"]) != 1172470 or not isinstance(app["newsitems"], list):
+                      raise RuntimeError("Unexpected Steam response")
+                  page = app["newsitems"]
+                  for item in page:
+                      if item.get("feedname") != feed:
+                          raise RuntimeError("Unexpected Steam source")
+                      if not all(item.get(k) for k in ("gid", "title", "url", "date")):
+                          raise RuntimeError("Incomplete Steam article")
+                      if int(item["date"]) <= int(time.time()):
+                          result.append(item)
+                  if len(page) < 100 or min(int(x["date"]) for x in page) <= since:
+                      return result
+                  next_end = min(int(x["date"]) for x in page)
+                  if next_end >= end:
+                      raise RuntimeError("Steam pagination did not advance")
+                  end = next_end
+              raise RuntimeError("News backlog too large; no notification was sent")
+
+
+          def main():
+              token = os.environ["GH_TOKEN"]
+              webhook = os.environ.get("DISCORD_WEBHOOK_APEX", "").strip()
+              p = urllib.parse.urlsplit(webhook)
+              if p.scheme != "https" or p.hostname not in ("discord.com", "discordapp.com") or not p.path.startswith("/api/webhooks/"):
+                  raise RuntimeError("DISCORD_WEBHOOK_APEX is missing or invalid")
+              if os.environ.get("TEST_NOTIFICATION", "false").lower() == "true":
+                  delivery_url = urllib.parse.urlunsplit(p._replace(query="wait=true"))
+                  response = request(delivery_url, {"content": "✅ Apex監視の接続テストです。公式パッチノートを最優先で、記事URL付きで通知します。\n公式ニュース：https://www.ea.com/games/apex-legends/apex-legends/news", "allowed_mentions": {"parse": []}})
+                  if not response.get("id"):
+                      raise RuntimeError("Discord did not confirm the test message")
+                  print("Apexのテスト通知を送信しました。この実行では監視履歴は変更していません。")
+                  return
+              api = os.environ["GITHUB_API_URL"] + "/repos/" + os.environ["GITHUB_REPOSITORY"]
+              headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}
+
+              def gh(path, data=None, method=None):
+                  return request(api + path, data, headers, method)
+
+              try:
+                  gh("/git/ref/heads/" + BRANCH)
+              except urllib.error.HTTPError as error:
+                  if error.code != 404:
+                      raise
+                  gh("/git/refs", {"ref": "refs/heads/" + BRANCH, "sha": os.environ["GITHUB_SHA"]})
+
+              sha = None
+              state = None
+              try:
+                  saved = gh("/contents/" + PATH + "?ref=" + BRANCH)
+                  sha = saved["sha"]
+                  state = json.loads(base64.b64decode(saved["content"]))
+                  if state.get("version") != 1 or not isinstance(state.get("seen"), list) or not isinstance(state.get("sent"), list):
+                      raise RuntimeError("Invalid saved state; refusing to reset history")
+              except urllib.error.HTTPError as error:
+                  if error.code != 404:
+                      raise
+                  # Missing history after prior use must not silently reset deduplication.
+                  prior = gh("/commits?sha=" + BRANCH + "&path=" + PATH + "&per_page=1")
+                  if prior:
+                      raise RuntimeError("History was deleted; restore apex-state.json before running")
+
+              def save():
+                  nonlocal sha
+                  data = {"message": "Update Apex monitor history [skip ci]", "branch": BRANCH,
+                      "content": base64.b64encode(json.dumps(state, ensure_ascii=False, indent=2).encode()).decode()}
+                  if sha:
+                      data["sha"] = sha
+                  response = gh("/contents/" + PATH, data, "PUT")
+                  sha = response["content"]["sha"]
+
+              def summary(message):
+                  print(message)
+                  with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+                      f.write(message + "\n\n")
+
+              if state and state.get("pending"):
+                  summary("⚠️ 前回のDiscord送信結果が確定していません。重複防止のため停止しました。Discordと apex-monitor-state ブランチの履歴を確認してください。")
+                  raise RuntimeError("Unresolved pending delivery; automatic resend disabled")
+
+              now = int(time.time())
+              since = max(state["started"], state["checked"] - 7 * 86400) if state else now
+              official = fetch("steam_community_announcements", since)
+              if not official:
+                  raise RuntimeError("Official news is empty; history was not updated")
+              try:
+                  auxiliary = fetch("pcgamer", since)
+              except Exception:
+                  auxiliary = []
+                  summary("⚠️ PC Gamerの補助情報は取得できませんでした。今回は公式情報のみ確認します。")
+              summary("取得件数：公式 " + str(len(official)) + " 件／PC Gamer " + str(len(auxiliary)) + " 件。記事の見出しと本文冒頭をルールで判定します。")
+
+              if state is None:
+                  state = {"version": 1, "started": now, "checked": now,
+                      "seen": sorted({str(x["gid"]) for x in official + auxiliary}),
+                      "sent": sorted(set().union(*(keys(x) for x in official + auxiliary))), "pending": None}
+                  save()
+                  summary("✅ Apex監視を初期化しました。過去記事は通知しません。次回から重要な新着を確認します。")
+                  return
+
+              original_seen = set(state["seen"])
+              seen = set(original_seen)
+              sent = set(state["sent"])
+              candidates = []
+              all_official_keys = set().union(*(keys(x) | official_references(x) for x in official))
+              official.sort(key=lambda x: (patch_channel(x) is None, int(x["date"])))
+              for item in official + sorted(auxiliary, key=lambda x: int(x["date"])):
+                  gid = str(item["gid"])
+                  if gid in seen:
+                      continue
+                  auxiliary_item = item["feedname"] != "steam_community_announcements"
+                  # Give the official announcement a 24-hour head start.
+                  if auxiliary_item and int(item["date"]) > now - 86400:
+                      continue
+                  seen.add(gid)
+                  if int(item["date"]) <= state["started"]:
+                      continue
+                  label = category(item)
+                  article_keys = keys(item)
+                  if not label or article_keys & sent:
+                      continue
+                  if auxiliary_item:
+                      # Supplement only reporting that cites a specific official announcement.
+                      if not any(k.startswith(("official:", "steam:")) for k in article_keys):
+                          continue
+                      if article_keys & all_official_keys:
+                          continue
+                  candidates.append((item, label, article_keys, auxiliary_item))
+                  sent.update(article_keys)
+
+              # Respect both Discord's 10-embed and 6000-character message limits.
+              batch, embeds = [], []
+              characters = 0
+              for candidate in candidates[:10]:
+                  item, label, _, is_aux = candidate
+                  embed = make_embed(item, label, is_aux)
+                  size = len(embed["title"]) + len(embed["description"])
+                  if characters + size > 5500:
+                      break
+                  batch.append(candidate)
+                  embeds.append(embed)
+                  characters += size
+              if candidates and not batch:
+                  raise RuntimeError("News URL is too long for Discord; no article was marked as sent")
+              for item, _, _, _ in candidates[len(batch):]:
+                  seen.discard(str(item["gid"]))
+              state["seen"] = sorted(seen)
+              if not batch:
+                  # A weekly history update also records that the monitor is still active.
+                  if seen != original_seen or now - state["checked"] >= 7 * 86400:
+                      state["checked"] = now
+                      save()
+                  summary("✅ 確認完了。通知対象の重要な新着はありません。")
+                  return
+
+              state["pending"] = {"gids": [str(x[0]["gid"]) for x in batch],
+                  "keys": sorted(set().union(*(x[2] for x in batch))), "time": now}
+              save()  # Persist before sending: an ambiguous failure must never auto-resend.
+              delivery_url = urllib.parse.urlunsplit(p._replace(query="wait=true"))
+              response = request(delivery_url, {"content": "🔔 Apex Legends 重要情報",
+                  "embeds": embeds, "allowed_mentions": {"parse": []}})
+              if not response.get("id"):
+                  raise RuntimeError("Discord did not confirm a message ID")
+              state["sent"] = sorted(set(state["sent"]) | set(state["pending"]["keys"]))
+              state["last_message_id"] = response["id"]
+              state["pending"] = None
+              state["checked"] = now
+              save()
+              summary("✅ 重要な新着を " + str(len(batch)) + " 件通知しました。")
+
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except RuntimeError as error:
+                  print("::error::" + str(error))
+                  sys.exit(1)
+              except urllib.error.HTTPError as error:
+                  print("::error::外部サービスがHTTP " + str(error.code) + " を返しました。Actionsの権限・Secrets・通知履歴を確認してください。")
+                  sys.exit(1)
+              except Exception as error:
+                  # Never print exception text that may contain a webhook URL or token.
+                  print("::error::監視を安全に停止しました（" + type(error).__name__ + "）。通信・入力・保存履歴を確認してください。")
+                  sys.exit(1)
