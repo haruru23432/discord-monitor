@@ -1,0 +1,51 @@
+name: Dead by Daylight Monitor
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-discord:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Send DbD test notification
+        env:
+          DISCORD_WEBHOOK_DBD: ${{ secrets.DISCORD_WEBHOOK_DBD }}
+        shell: python
+        run: |
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          webhook = os.environ.get("DISCORD_WEBHOOK_DBD", "").strip()
+          if not webhook:
+              sys.exit("DISCORD_WEBHOOK_DBD が登録されていません。")
+
+          payload = {
+              "content": "✅ DbD監視の接続テストです。このチャンネルに重要な新着情報を通知します。",
+              "allowed_mentions": {"parse": []}
+          }
+
+          request = urllib.request.Request(
+              webhook,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json",
+                  "User-Agent": "DiscordMonitor/1.0"
+              },
+              method="POST"
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  if response.status not in (200, 204):
+                      sys.exit("Discordへの送信に失敗しました。")
+          except Exception:
+              sys.exit("Discordへの送信に失敗しました。Secretの設定を確認してください。")
+
+          print("DbDチャンネルへのテスト通知を送信しました。")
