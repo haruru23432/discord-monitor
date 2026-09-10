@@ -56,7 +56,24 @@ jobs:
               return re.sub(r"\s+", " ", html.unescape(value)).strip()
 
 
+          def patch_channel(item):
+              if item.get("feedname") != "steam_community_announcements":
+                  return None
+              # Keep [PTB] in titles; plain() removes bracketed formatting.
+              title = html.unescape(re.sub(r"<[^>]+>", " ", item["title"])).lower()
+              patch = re.search(r"\b(patch(?:\s+notes?)?|hot[ -]?fix|bug[ -]?fix)\b|パッチノート|ホットフィックス|バグ修正", title)
+              version_title = re.match(r"\s*(?:\[?(?:ptb|live)\]?\s*[-|:]?\s*)?\d+\.\d+\.\d+\b", title)
+              if not (patch or version_title):
+                  return None
+              if re.search(r"\b(ptb|public test build)\b|公開テスト", title):
+                  return "PTB"
+              return "通常サーバー"
+
+
           def category(item):
+              channel = patch_channel(item)
+              if channel:
+                  return "公式パッチノート（" + channel + "）"
               title = plain(item["title"]).lower()
               intro = plain(item.get("contents", ""))[:1600].lower()
               if re.search(r"\b(hotfix|bugfix|bug fix|known issues|kill switch|weekly|sale|discount|giveaway|codes?|survey|contest|livestream|livestreaming|recap)\b", title):
@@ -91,6 +108,14 @@ jobs:
           def keys(item):
               result = {"gid:" + str(item["gid"])}
               title = re.sub(r"\W+", "", plain(item["title"]).casefold())
+              channel = patch_channel(item)
+              if channel:
+                  # A patch can link to older notes. Those references must never suppress
+                  # the new patch, nor should PTB and live notes suppress each other.
+                  result.add("patch-url:" + channel + ":" + item["url"].split("?")[0])
+                  if re.search(r"\b\d+\.\d+\.\d+\b", item["title"]):
+                      result.add("patch-title:" + channel + ":" + hashlib.sha256(title.encode()).hexdigest())
+                  return result
               result.add("title:" + hashlib.sha256(title.encode()).hexdigest())
               # Shared official article links deduplicate syndicated coverage.
               text = html.unescape(item.get("contents", "")) + " " + item["url"]
@@ -106,6 +131,17 @@ jobs:
                       if match:
                           result.add("steam:" + match[1])
               return result
+
+
+          def make_embed(item, label, is_aux):
+              is_patch = patch_channel(item) is not None
+              title = html.unescape(re.sub(r"<[^>]+>", " ", item["title"]))
+              source = "PC Gamer（公式発表を引用した補助情報）" if is_aux else "DbD公式・Steamニュース"
+              description = ("優先度：最優先\n" if is_patch else "") + "分類：" + label + "\n情報源：" + source
+              description += "\n\n" + ("パッチノートはこちら：" if is_patch else "記事はこちら：") + "\n" + item["url"]
+              return {"title": title[:256], "url": item["url"], "description": description,
+                  "color": 15158332 if is_patch else 11141120,
+                  "timestamp": datetime.fromtimestamp(int(item["date"]), timezone.utc).isoformat()}
 
 
           def fetch(feed, since):
@@ -213,7 +249,8 @@ jobs:
               sent = set(state["sent"])
               candidates = []
               all_official_keys = set().union(*(keys(x) for x in official))
-              for item in sorted(official, key=lambda x: int(x["date"])) + sorted(auxiliary, key=lambda x: int(x["date"])):
+              official.sort(key=lambda x: (patch_channel(x) is None, int(x["date"])))
+              for item in official + sorted(auxiliary, key=lambda x: int(x["date"])):
                   gid = str(item["gid"])
                   if gid in seen:
                       continue
@@ -237,9 +274,21 @@ jobs:
                   candidates.append((item, label, article_keys, auxiliary_item))
                   sent.update(article_keys)
 
-              # Process one Discord message per run (at most 10 embeds).
-              batch = candidates[:10]
-              for item, _, _, _ in candidates[10:]:
+              # Respect both Discord's 10-embed and 6000-character message limits.
+              batch, embeds = [], []
+              characters = 0
+              for candidate in candidates[:10]:
+                  item, label, _, is_aux = candidate
+                  embed = make_embed(item, label, is_aux)
+                  size = len(embed["title"]) + len(embed["description"])
+                  if characters + size > 5500:
+                      break
+                  batch.append(candidate)
+                  embeds.append(embed)
+                  characters += size
+              if candidates and not batch:
+                  raise RuntimeError("News URL is too long for Discord; no article was marked as sent")
+              for item, _, _, _ in candidates[len(batch):]:
                   seen.discard(str(item["gid"]))
               state["seen"] = sorted(seen)
               if not batch:
@@ -250,12 +299,6 @@ jobs:
                   summary("✅ 確認完了。通知対象の重要な新着はありません。")
                   return
 
-              embeds = []
-              for item, label, article_keys, is_aux in batch:
-                  embeds.append({"title": plain(item["title"])[:256], "url": item["url"],
-                      "description": "分類：" + label + "\n情報源：" + ("PC Gamer（公式発表を引用した補助情報）" if is_aux else "DbD公式・Steamニュース"),
-                      "color": 11141120,
-                      "timestamp": datetime.fromtimestamp(int(item["date"]), timezone.utc).isoformat()})
               state["pending"] = {"gids": [str(x[0]["gid"]) for x in batch],
                   "keys": sorted(set().union(*(x[2] for x in batch))), "time": now}
               save()  # Persist before sending: an ambiguous failure must never auto-resend.
