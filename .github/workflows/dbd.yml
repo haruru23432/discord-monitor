@@ -40,7 +40,42 @@ jobs:
 
           BRANCH = "dbd-monitor-state"
           PATH = "dbd-state.json"
-          UA = "DbDImportantNewsMonitor/1.0"
+          UA = "DbDImportantNewsMonitor/2.0"
+          BHVR = "bhvr_patch_notes"
+          SOURCE_FAILURES = []
+
+
+          def fetch_bhvr(since):
+              # Public, unauthenticated Vanilla API; follow its pagination metadata.
+              url = "https://forums.bhvr.com/api/v2/articles?limit=100"
+              result, visited = [], set()
+              for _ in range(15):
+                  p = urllib.parse.urlsplit(url)
+                  if p.scheme != "https" or p.netloc != "forums.bhvr.com" or p.path != "/api/v2/articles" or url in visited:
+                      raise RuntimeError("Unexpected BHVR pagination")
+                  visited.add(url)
+                  with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=30) as response:
+                      page = json.load(response)
+                      next_url = response.headers.get("x-app-page-next-url")
+                  if not isinstance(page, list):
+                      raise RuntimeError("Unexpected BHVR response")
+                  for row in page:
+                      if row.get("knowledgeBaseID") != 1 or row.get("status") != "published" or row.get("locale") != "en":
+                          continue
+                      article_url = row["url"]
+                      if not article_url.startswith("https://forums.bhvr.com/dead-by-daylight/kb/articles/"):
+                          raise RuntimeError("Unexpected BHVR article URL")
+                      published = int(datetime.fromisoformat(row["dateInserted"]).timestamp())
+                      item = dict(gid="bhvr:" + str(row["articleID"]), title=row["name"],
+                          url=article_url, date=published, contents="", feedname=BHVR)
+                      if patch_channel(item) and published <= int(time.time()):
+                          result.append(item)
+                  if not next_url:
+                      if not result:
+                          raise RuntimeError("BHVR patch notes are empty")
+                      return result
+                  url = urllib.parse.urljoin(url, next_url)
+              raise RuntimeError("BHVR pagination limit exceeded")
 
 
           def request(url, data=None, headers=None, method=None):
@@ -57,7 +92,7 @@ jobs:
 
 
           def patch_channel(item):
-              if item.get("feedname") != "steam_community_announcements":
+              if item.get("feedname") not in ("steam_community_announcements", BHVR):
                   return None
               # Keep [PTB] in titles; plain() removes bracketed formatting.
               title = html.unescape(re.sub(r"<[^>]+>", " ", item["title"])).lower()
@@ -114,6 +149,8 @@ jobs:
                   # the new patch, nor should PTB and live notes suppress each other.
                   result.add("patch-url:" + channel + ":" + item["url"].split("?")[0])
                   if re.search(r"\b\d+\.\d+\.\d+\b", item["title"]):
+                      version = re.search(r"\b\d+\.\d+\.\d+\b", item["title"])[0]
+                      result.add("patch-version:" + channel + ":" + version)
                       result.add("patch-title:" + channel + ":" + hashlib.sha256(title.encode()).hexdigest())
                   return result
               result.add("title:" + hashlib.sha256(title.encode()).hexdigest())
@@ -136,7 +173,7 @@ jobs:
           def make_embed(item, label, is_aux):
               is_patch = patch_channel(item) is not None
               title = html.unescape(re.sub(r"<[^>]+>", " ", item["title"]))
-              source = "PC Gamer（公式発表を引用した補助情報）" if is_aux else "DbD公式・Steamニュース"
+              source = "PC Gamer（公式発表を引用した補助情報）" if is_aux else ("BHVR公式パッチノート" if item["feedname"] == BHVR else "DbD公式・Steamニュース")
               description = ("優先度：最優先\n" if is_patch else "") + "分類：" + label + "\n情報源：" + source
               description += "\n\n" + ("パッチノートはこちら：" if is_patch else "記事はこちら：") + "\n" + item["url"]
               return {"title": title[:256], "url": item["url"], "description": description,
@@ -226,7 +263,19 @@ jobs:
 
               now = int(time.time())
               since = max(state["started"], state["checked"] - 7 * 86400) if state else now
-              official = fetch("steam_community_announcements", since)
+              SOURCE_FAILURES.clear()
+              try:
+                  direct = fetch_bhvr(since)
+              except Exception:
+                  direct = []
+                  SOURCE_FAILURES.append("BHVR")
+                  summary("⚠️ BHVR公式の直接取得に失敗しました。Steam監視を継続します。")
+              try:
+                  steam = fetch("steam_community_announcements", since)
+              except Exception:
+                  steam = []
+                  SOURCE_FAILURES.append("Steam")
+              official = direct + steam
               if not official:
                   raise RuntimeError("Official news is empty; history was not updated")
               try:
@@ -240,10 +289,22 @@ jobs:
                   state = {"version": 1, "started": now, "checked": now,
                       "seen": sorted({str(x["gid"]) for x in official + auxiliary}),
                       "sent": sorted(set().union(*(keys(x) for x in official + auxiliary))), "pending": None}
+                  state["bhvr_initialized"] = bool(direct)
                   save()
                   summary("✅ DbD監視を初期化しました。過去記事は通知しません。次回から重要な新着を確認します。")
                   return
 
+              # Upgrade deduplication from already-seen Steam posts before adding a source.
+              for item in steam:
+                  if str(item["gid"]) in state["seen"]:
+                      state["sent"] = sorted(set(state["sent"]) | keys(item))
+              if direct and not state.get("bhvr_initialized"):
+                  # Establish a baseline; adding BHVR must not dump historical articles.
+                  state["seen"] = sorted(set(state["seen"]) | {x["gid"] for x in direct})
+                  state["sent"] = sorted(set(state["sent"]) | set().union(*(keys(x) for x in direct)))
+                  state["bhvr_initialized"] = True
+                  save()
+                  summary("✅ BHVR公式監視を追加しました。既存記事は通知せず、次回から新着を確認します。")
               original_seen = set(state["seen"])
               seen = set(original_seen)
               sent = set(state["sent"])
@@ -254,7 +315,7 @@ jobs:
                   gid = str(item["gid"])
                   if gid in seen:
                       continue
-                  auxiliary_item = item["feedname"] != "steam_community_announcements"
+                  auxiliary_item = item["feedname"] not in ("steam_community_announcements", BHVR)
                   # Give the official announcement a 24-hour head start.
                   if auxiliary_item and int(item["date"]) > now - 86400:
                       continue
@@ -318,6 +379,8 @@ jobs:
           if __name__ == "__main__":
               try:
                   main()
+                  if SOURCE_FAILURES:
+                      raise RuntimeError("一部の公式情報源を取得できませんでした。取得できた情報源の監視は実施済みです。")
               except RuntimeError as error:
                   print("::error::" + str(error))
                   sys.exit(1)
