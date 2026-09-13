@@ -175,7 +175,7 @@ jobs:
                   return parse_rss(raw, source)
               if source['kind'] == 'medal':
                   result = parse_medal(raw, source)
-                  logs = sorted({r['url'] for r in result if 'changelog' in r['url']}, reverse=True)[:2]
+                  logs = sorted({r['url'] for r in result if 'changelog' in r['url']}, reverse=True)[:1]
                   for url in logs:
                       result.extend(parse_changelog(request(url), source, url))
                   return result
@@ -430,3 +430,4 @@ jobs:
               except Exception as error:
                   print('Important monitor stopped: ' + type(error).__name__ + '. Check Secret, source status and saved pending history; no automatic resend.', file=sys.stderr)
                   sys.exit(1)
+          
