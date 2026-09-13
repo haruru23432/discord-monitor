@@ -206,10 +206,15 @@ jobs:
               parts = re.split(r'<h1\b[^>]*>(.*?)</h1>', raw, flags=re.S)
               result = []
               for index in range(1, len(parts), 2):
-                  match = re.search(r'([A-Z][a-z]+ \d{1,2}, \d{4}) Changelog', clean(parts[index]))
+                  heading = re.sub(r'(\d)(?:st|nd|rd|th)\b', r'\1', clean(parts[index]))
+                  match = re.search(r'([A-Z][a-z]+ \d{1,2}, \d{4}) Changelog', heading)
                   if not match:
                       continue
-                  day = datetime.strptime(match[1], '%B %d, %Y').replace(tzinfo=timezone.utc)
+                  try:
+                      day = datetime.strptime(match[1], '%B %d, %Y')
+                  except ValueError:
+                      day = datetime.strptime(match[1], '%b %d, %Y')
+                  day = day.replace(tzinfo=timezone.utc)
                   section = parts[index + 1]
                   # Feature headings, not a generic annual changelog title, drive classification.
                   headings = ' '.join(clean(h) for h in re.findall(r'<h[2-6]\b[^>]*>(.*?)</h[2-6]>', section, re.S))
