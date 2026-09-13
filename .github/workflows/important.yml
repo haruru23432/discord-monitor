@@ -115,7 +115,8 @@ jobs:
                   # Trust only articles on the source domain (Steam RSS uses the same domain).
                   if urllib.parse.urlsplit(url).hostname != urllib.parse.urlsplit(source['url']).hostname:
                       raise ValueError('Unexpected feed article domain')
-                  result.append(article(source, title, url, row.findtext('description') or '', date))
+                  body = row.findtext('{http://purl.org/rss/1.0/modules/content/}encoded') or row.findtext('description') or ''
+                  result.append(article(source, title, url, body, date))
               return result
           
           
@@ -225,7 +226,7 @@ jobs:
               return result
           
           
-          def classify(item):
+          def classify_v1(item):
               title, body = item['title'].lower(), clean(item['body'])[:1600].lower()
               topic = item['topic']
               if re.search(r'\b(rumou?r|leak|speculation|weekly|roundup|recap|sale|discount|giveaway|survey|contest|esports|tournament)\b|how to|best .{0,30}(?:software|settings)|使い方|セール', title):
@@ -260,6 +261,43 @@ jobs:
               if re.search(r'introducing|launch|roll.{0,4}out|now available|new feature|major update|新機能|大型アップデート', title):
                   if re.search(r'record|shar|famil|voice|video|stream|chat|overlay|security|privacy|accessib|backup|録画|共有|音声|セキュリティ', title + ' ' + body[:600]):
                       return '主要機能の追加・変更'
+              return None
+          
+          
+          def classify(item):
+              """Require a concrete change and its impact in the same sentence/heading."""
+              old = classify_v1(item)
+              if old:
+                  return old
+              title = item['title'].lower()
+              if re.search(r'\b(rumou?r|leak|speculation|roundup|recap|giveaway|survey|contest|esports|tournament)\b|how to|使い方', title):
+                  return None
+              text = clean(item['body'])[:16000].lower()
+              if item['topic'] == 'windows' and not re.search(r'windows\s*11', title + ' ' + text):
+                  return None
+              segments = [title] + re.split(r'(?<=[.!?。])\s+|\n', text)
+              for sentence in segments:
+                  sentence = sentence[:900]
+                  if re.search(r'\b(no |not |never |rumou?r|might|could|previously|last year)|既に終了', sentence):
+                      continue
+                  change = re.search(r'\b(introduc\w*|launch\w*|add\w*|releas\w*|roll\w*|now|new|will|remov\w*|replac\w*)\b|追加|実装|開催|変更', sentence)
+                  if re.search(r'boot loop|unbootable|data loss|data corruption|actively exploited|widespread outage|blue screen|bsod', sentence):
+                      if item['topic'] != 'windows' or re.search(r'update|kb\d+|更新', title + ' ' + sentence):
+                          return '重大な不具合・利用への影響'
+                  if item['topic'] in GAMES and change:
+                      if re.search(r'new (?:killer|survivor|hero|legend|map|chapter)|新(?:キャラ|キラー|マップ)', sentence):
+                          return '新キャラクター・主要コンテンツ'
+                      if re.search(r'crossover|collaboration|コラボ', sentence):
+                          return 'コラボ'
+                      if re.search(r'limited.time (?:event|mode)|collection event|期間限定', sentence):
+                          return '期間限定イベント'
+                      if re.search(r'matchmaking|ranked (?:system|scoring)|perk (?:system|rework)|overhaul|rework|大幅', sentence):
+                          return '大型更新・重要なゲーム変更'
+                  if item['topic'] not in GAMES:
+                      if re.search(r'end.{0,15}support|no longer supported|age verification.{0,40}required|mandatory.{0,40}(?:account|verification)|サポート終了', sentence):
+                          return '重要な仕様・対応条件の変更'
+                      if change and re.search(r'video editor|multi.track editing|family sharing|steam families|recording (?:format|limit)|upload limit|privacy (?:control|setting)|screen shar|voice chat|keyboard.{0,20}overlay', sentence):
+                          return '主要機能の追加・変更'
               return None
           
           
@@ -308,34 +346,44 @@ jobs:
           def plan(state, batches, legacy, now):
               state = copy.deepcopy(state)
               candidates = []
+              audit = {}
               for source, items in sorted(batches, key=lambda b: not b[0]['official']):
                   baseline = source['id'] not in state['sources']
                   record = state['sources'].setdefault(source['id'], {'started': now, 'seen': {}})
+                  counts = audit[source['id']] = dict(fetched=len(items), seen=0, baseline_or_old=0, waiting=0, rejected=0, duplicate=0, queued=0, selected=0)
                   for item in items:
                       identity = digest(item['gid'])
                       if identity in record['seen']:
+                          counts['seen'] += 1
                           continue
                       first = state['discovered'].setdefault(source['id'] + ':' + identity, now)
                       published = item['date'] if item['date'] is not None else first
                       if baseline or published <= record['started'] or published < now - 14 * DAY:
+                          counts['baseline_or_old'] += 1
                           record['seen'][identity] = now
                           continue
                       if published > now:
+                          counts['waiting'] += 1
                           continue
                       # Give existing monitors a full day; defer auxiliary Windows news for six hours.
                       delay = DAY if item['topic'] in GAMES else (6 * 3600 if item['topic'] == 'windows' else 0)
                       if now - published < delay:
+                          counts['waiting'] += 1
                           continue
                       label = classify(item)
                       scoped = {item['topic'] + ':' + key for key in keys(item)}
                       if not label or scoped & set(state['sent']) or legacy_duplicate(item, legacy):
+                          counts['rejected' if not label else 'duplicate'] += 1
                           record['seen'][identity] = now
                           continue
                       if len(candidates) >= 5:
+                          counts['queued'] += 1
                           continue
                       candidates.append((item, label, sorted(scoped)))
+                      counts['selected'] += 1
                       state['sent'].extend(sorted(scoped))
                       record['seen'][identity] = now
+              state['audit'] = audit
               return state, candidates
           
           
@@ -347,11 +395,16 @@ jobs:
           
           def collect(now):
               def get(source):
-                  try:
-                      return source, fetch_source(source, now), None
-                  except Exception as error:
-                      # Never print exception text: network exceptions can contain credentials.
-                      return source, [], type(error).__name__
+                  for attempt in range(3):
+                      try:
+                          return source, fetch_source(source, now), None
+                      except Exception as error:
+                          failure = type(error).__name__
+                          # Retry only reads; never retry Discord delivery or history writes.
+                          if isinstance(error, (urllib.error.URLError, TimeoutError)) and attempt < 2:
+                              time.sleep(attempt + 1)
+                              continue
+                          return source, [], failure
               with ThreadPoolExecutor(max_workers=4) as pool:
                   results = list(pool.map(get, SOURCES))
               return [(s, rows) for s, rows, error in results if not error], {s['id']: error for s, rows, error in results if error}
@@ -423,6 +476,9 @@ jobs:
               if failures:
                   summary += '\n取得失敗：' + ', '.join(failures) + '。成功した情報源のみ処理しました。'
               print(summary)
+              summary += '\n\n|情報源|取得|既読|初回・古い記事|待機|重要度対象外|重複|上限待ち|通知|\n|---|---:|---:|---:|---:|---:|---:|---:|---:|\n'
+              for source_id, counts in state['audit'].items():
+                  summary += '|' + source_id + '|' + '|'.join(str(value) for value in counts.values()) + '|\n'
               if env.get('GITHUB_STEP_SUMMARY'):
                   with open(env['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
                       f.write(summary + '\n')
