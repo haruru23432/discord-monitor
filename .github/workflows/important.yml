@@ -39,6 +39,7 @@ jobs:
           import urllib.parse
           import urllib.request
           import xml.etree.ElementTree as ET
+          from html.parser import HTMLParser
           from concurrent.futures import ThreadPoolExecutor
           from datetime import datetime, timezone
           from email.utils import parsedate_to_datetime
@@ -120,6 +121,41 @@ jobs:
           
           def parse_medal(raw, source):
               result = []
+              class Cards(HTMLParser):
+                  def __init__(self):
+                      super().__init__()
+                      self.depth = 0
+                      self.heading = False
+                      self.title = ''
+                      self.url = ''
+          
+                  def handle_starttag(self, tag, attrs):
+                      attrs = dict(attrs)
+                      if tag == 'div':
+                          if self.depth:
+                              self.depth += 1
+                          elif 'blog-card' in attrs.get('class', '').split():
+                              self.depth, self.title, self.url = 1, '', ''
+                      if self.depth:
+                          if tag in ('h2', 'h3', 'h4'):
+                              self.heading = True
+                          if tag == 'a' and '/blog/posts/' in attrs.get('href', ''):
+                              self.url = urllib.parse.urljoin(source['url'], attrs['href'])
+          
+                  def handle_data(self, value):
+                      if self.depth and self.heading:
+                          self.title += value
+          
+                  def handle_endtag(self, tag):
+                      if tag in ('h2', 'h3', 'h4'):
+                          self.heading = False
+                      if tag == 'div' and self.depth:
+                          self.depth -= 1
+                          if not self.depth and self.title and self.url:
+                              if urllib.parse.urlsplit(self.url).hostname == 'medal.tv':
+                                  result.append(article(source, self.title, self.url))
+          
+              Cards().feed(raw)
               for match in re.finditer(r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', raw, re.S):
                   url = urllib.parse.urljoin(source['url'], html.unescape(match[1]))
                   if urllib.parse.urlsplit(url).hostname != 'medal.tv' or '/blog/posts/' not in url:
