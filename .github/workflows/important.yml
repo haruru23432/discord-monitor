@@ -23,6 +23,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           DISCORD_WEBHOOK_IMPORTANT: ${{ secrets.DISCORD_WEBHOOK_IMPORTANT }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
         shell: python
         run: |
           """Free, standard-library-only supplemental monitor. Never writes legacy state."""
@@ -47,6 +48,8 @@ jobs:
           
           BRANCH, STATE_PATH = 'important-monitor-state', 'important-state.json'
           DAY = 86400
+          # User-requested recovery only; sent aliases still prevent repeat delivery.
+          RECOVER_URLS = {'https://discord.com/blog/discord-patch-notes-september-8-2026'}
           GAMES = {'dbd': 381210, 'ow': 2357570, 'apex': 1172470}
           NAMES = {'windows': 'Windows 11', 'dbd': 'Dead by Daylight', 'ow': 'Overwatch',
                    'apex': 'Apex Legends', 'discord': 'Discord', 'steam': 'Steam', 'medal': 'Medal.tv'}
@@ -173,7 +176,12 @@ jobs:
           def fetch_source(source, now):
               raw = request(source['url'])
               if source['kind'] == 'rss':
-                  return parse_rss(raw, source)
+                  rows = parse_rss(raw, source)
+                  if source['id'] == 'discord-official':
+                      for row in rows:
+                          if row['date'] >= now - 14 * DAY or row['url'] in RECOVER_URLS:
+                              row['body'] = discord_body(request(row['url']))
+                  return rows
               if source['kind'] == 'medal':
                   result = parse_medal(raw, source)
                   logs = sorted({r['url'] for r in result if 'changelog' in r['url']}, reverse=True)[:1]
@@ -264,8 +272,43 @@ jobs:
               return None
           
           
+          def discord_body(raw):
+              # Only article elements, excluding navigation and related-article cards.
+              sections = re.findall(r'<article\b[^>]*>(.*?)</article>', raw, re.S | re.I)
+              if not sections:
+                  raise ValueError('Discord article body missing')
+              return '\n'.join(sections)
+          
+          
+          def discord_impacts(item):
+              if item['topic'] != 'discord':
+                  return []
+              raw = item['body']
+              blocks = re.findall(r'<li\b[^>]*>(.*?)</li>', raw, re.S | re.I)
+              if not blocks:
+                  blocks = re.split(r'(?<=[.!?])\s+|\n', clean(raw))
+              impacts = []
+              for block in blocks:
+                  text = clean(block).lower()
+                  if re.search(r'\b(?:not|never|rumour|rumor|might|could)\b.{0,35}(?:ship|launch|improv|increas|upgrad)', text):
+                      continue
+                  if re.search(r'windows|desktop', text) and re.search(r'cpu usage', text) and re.search(r'improv|reduc', text):
+                      values = [float(n) for n in re.findall(r'(\d+(?:\.\d+)?)\s*%', text)]
+                      if values and max(values) >= 10:
+                          impacts.append('デスクトップ版のCPU使用率に大きな改善（公式測定値。環境によって異なります）')
+                  if re.search(r'windows', text) and re.search(r'system[ -]wide echo cancellation', text) and re.search(r'shipped|introduced|launched|rolled out', text):
+                      impacts.append('Windowsでシステム全体を対象にしたエコーキャンセルを導入')
+                  if re.search(r'(?:free |file )?upload limit', text) and re.search(r'upgraded|increased|raised|doubled|reduced|lowered', text):
+                      match = re.search(r'from\s+(\d+\s*[mg]b)\s+to\s+(\d+\s*[mg]b)', text)
+                      if match:
+                          impacts.append('ファイルアップロード上限を ' + match[1].upper() + ' → ' + match[2].upper() + ' に変更')
+              return list(dict.fromkeys(impacts))
+          
+          
           def classify(item):
               """Require a concrete change and its impact in the same sentence/heading."""
+              if discord_impacts(item):
+                  return 'PCでの通話・性能・ファイル共有の重要変更'
               old = classify_v1(item)
               if old:
                   return old
@@ -353,12 +396,13 @@ jobs:
                   counts = audit[source['id']] = dict(fetched=len(items), seen=0, baseline_or_old=0, waiting=0, rejected=0, duplicate=0, queued=0, selected=0)
                   for item in items:
                       identity = digest(item['gid'])
-                      if identity in record['seen']:
+                      recover = item['url'] in RECOVER_URLS
+                      if identity in record['seen'] and not recover:
                           counts['seen'] += 1
                           continue
                       first = state['discovered'].setdefault(source['id'] + ':' + identity, now)
                       published = item['date'] if item['date'] is not None else first
-                      if baseline or published <= record['started'] or published < now - 14 * DAY:
+                      if not recover and (baseline or published <= record['started'] or published < now - 14 * DAY):
                           counts['baseline_or_old'] += 1
                           record['seen'][identity] = now
                           continue
@@ -390,7 +434,16 @@ jobs:
           def embed(item, label):
               return {'title': (NAMES[item['topic']] + '：' + item['title'])[:256], 'url': item['url'],
                       'description': '分類：' + label + '\n情報源：' + ('公式' if item['official'] else ('Windows Latest' if item['topic'] == 'windows' else 'PC Gamer') + '（外部報道）') +
-                      '\n\n詳細・対象環境はリンク先で確認してください。', 'color': 15158332 if '不具合' in label else 3447003}
+                      ('\n\n' + '\n'.join('・' + point for point in discord_impacts(item)) if discord_impacts(item) else '') +
+                      '\n\n詳細・対象環境・段階配信の状況は公式リンクで確認してください。', 'color': 15158332 if '不具合' in label else 3447003}
+          
+          
+          def notification_payload(candidates, user_id):
+              if not re.fullmatch(r'[0-9]{17,20}', user_id):
+                  raise ValueError('DISCORD_MENTION_USER_ID is missing or invalid')
+              return {'content': '<@' + user_id + '> 重要情報の更新です。',
+                      'embeds': [embed(item, label) for item, label, _ in candidates],
+                      'allowed_mentions': {'parse': [], 'users': [user_id]}}
           
           
           def collect(now):
@@ -463,14 +516,16 @@ jobs:
               state, candidates = plan(state, batches, legacy, now)
               state['checked'], state['source_failures'] = now, failures
               if candidates:
+                  payload = notification_payload(candidates, env.get('DISCORD_MENTION_USER_ID', '').strip())
                   state['pending'] = {'at': now, 'urls': [item['url'] for item, _, _ in candidates]}
               save()
               if candidates:
-                  response = json.loads(request(hook + '?wait=true', {'embeds': [embed(item, label) for item, label, _ in candidates],
-                                                                     'allowed_mentions': {'parse': []}}))
+                  response = json.loads(request(hook + '?wait=true', payload))
                   if not response.get('id'):
                       raise ValueError('Discord response did not confirm delivery')
                   state['last_message_id'], state['pending'] = response['id'], None
+                  state['last_delivery_urls'] = [item['url'] for item, _, _ in candidates]
+                  state['last_mention_confirmed'] = any(user.get('id') == env.get('DISCORD_MENTION_USER_ID') for user in response.get('mentions', []))
                   save()
               summary = '補完監視：取得元 ' + str(len(batches)) + '/' + str(len(SOURCES)) + '、通知 ' + str(len(candidates)) + '件。'
               if failures:
