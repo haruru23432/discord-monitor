@@ -456,15 +456,35 @@ jobs:
               source = '公式' if item['official'] else ('Windows Latest' if item['topic'] == 'windows' else 'PC Gamer') + '（外部報道）'
               return {'title': (NAMES[item['topic']] + '：' + item['title'])[:256], 'url': item['url'],
                       'description': ('※取得済み・未送信の重要情報を補完通知しています。\n\n' if item.get('recovered') else '') +
-                      '**要約**\n' + brief_summary(item, label) + '\n\n**情報元（' + source + '）**\n' + item['url'],
+                      '**要約**\n' + item.get('summary_ja', brief_summary(item, label)) + '\n\n**情報元（' + source + '）**\n' + item['url'],
                       'color': 15158332 if '不具合' in label else 3447003}
+          
+          
+          def japanese_summary(item, label):
+              summary = brief_summary(item, label)
+              marker = '\n原文の要点：'
+              if marker not in summary:
+                  return summary
+              excerpt = summary.split(marker, 1)[1]
+              if re.search(r'[ぁ-んァ-ヶ]', excerpt):
+                  return label + '\n' + excerpt
+              # Public news text only; no account IDs, webhook URLs, or credentials.
+              while len(excerpt.encode('utf-8')) > 480:
+                  excerpt = excerpt[:-1]
+              endpoint = 'https://api.mymemory.translated.net/get?' + urllib.parse.urlencode({'q': excerpt, 'langpair': 'en|ja'})
+              result = json.loads(request(endpoint))
+              translated = html.unescape(result.get('responseData', {}).get('translatedText', '')).strip()
+              if str(result.get('responseStatus')) != '200' or result.get('quotaFinished') or not re.search(r'[ぁ-んァ-ヶ一-龯]', translated):
+                  raise ValueError('Japanese translation unavailable; news remains unsent for next run')
+              translated = re.sub(r'([\\`*_~|])', r'\\\1', translated)
+              return label + '\n' + translated[:600] + '\n（自動翻訳）'
           
           
           def notification_payload(candidates, user_id):
               if not re.fullmatch(r'[0-9]{17,20}', user_id):
                   raise ValueError('DISCORD_MENTION_USER_ID is missing or invalid')
               return {'content': '<@' + user_id + '> 重要情報の更新です。',
-                      'embeds': [embed(item, label) for item, label, _ in candidates],
+                      'embeds': [embed(dict(item, summary_ja=japanese_summary(item, label)), label) for item, label, _ in candidates],
                       'allowed_mentions': {'parse': [], 'users': [user_id]}}
           
           
