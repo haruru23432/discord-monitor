@@ -396,7 +396,7 @@ jobs:
                   counts = audit[source['id']] = dict(fetched=len(items), seen=0, baseline_or_old=0, waiting=0, rejected=0, duplicate=0, queued=0, selected=0)
                   for item in items:
                       identity = digest(item['gid'])
-                      recover = item['url'] in RECOVER_URLS
+                      recover = item['url'] in RECOVER_URLS or (item['date'] is not None and now - 14 * DAY <= item['date'] <= now)
                       if identity in record['seen'] and not recover:
                           counts['seen'] += 1
                           continue
@@ -423,6 +423,8 @@ jobs:
                       if len(candidates) >= 5:
                           counts['queued'] += 1
                           continue
+                      if identity in record['seen'] or published <= record['started']:
+                          item = dict(item, recovered=True)
                       candidates.append((item, label, sorted(scoped)))
                       counts['selected'] += 1
                       state['sent'].extend(sorted(scoped))
@@ -431,11 +433,31 @@ jobs:
               return state, candidates
           
           
+          def brief_summary(item, label):
+              points = discord_impacts(item)
+              if points:
+                  return '\n'.join('・' + point for point in points[:3])
+              # Extract source wording instead of inventing details or translating numbers.
+              body = re.sub(r'<(?:script|style)\b[^>]*>.*?</(?:script|style)>', '', item['body'], flags=re.S | re.I)
+              blocks = re.split(r'</(?:p|li|h[1-6])>|(?<=[.!?。])\s+', body)
+              cues = r'new|introduc|launch|releas|chang|updat|increas|reduc|support|crash|outage|rework|event|追加|変更|不具合|開催'
+              excerpt = next((clean(block) for block in blocks
+                              if 25 <= len(clean(block)) <= 600 and re.search(cues, clean(block), re.I)
+                              and not re.search(r'subscribe|cookie|read more|privacy policy', clean(block), re.I)), '')
+              if not excerpt:
+                  excerpt = clean(item['title'])
+              excerpt = excerpt[:240] + ('…' if len(excerpt) > 240 else '')
+              # Escape formatting supplied by third-party sources; mentions remain disallowed.
+              excerpt = re.sub(r'([\\`*_~|])', r'\\\1', excerpt)
+              return label + '\n原文の要点：' + excerpt
+          
+          
           def embed(item, label):
+              source = '公式' if item['official'] else ('Windows Latest' if item['topic'] == 'windows' else 'PC Gamer') + '（外部報道）'
               return {'title': (NAMES[item['topic']] + '：' + item['title'])[:256], 'url': item['url'],
-                      'description': '分類：' + label + '\n情報源：' + ('公式' if item['official'] else ('Windows Latest' if item['topic'] == 'windows' else 'PC Gamer') + '（外部報道）') +
-                      ('\n\n' + '\n'.join('・' + point for point in discord_impacts(item)) if discord_impacts(item) else '') +
-                      '\n\n詳細・対象環境・段階配信の状況は公式リンクで確認してください。', 'color': 15158332 if '不具合' in label else 3447003}
+                      'description': ('※取得済み・未送信の重要情報を補完通知しています。\n\n' if item.get('recovered') else '') +
+                      '**要約**\n' + brief_summary(item, label) + '\n\n**情報元（' + source + '）**\n' + item['url'],
+                      'color': 15158332 if '不具合' in label else 3447003}
           
           
           def notification_payload(candidates, user_id):
