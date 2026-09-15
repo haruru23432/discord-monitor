@@ -1,7 +1,7 @@
 {
   "version": 1,
   "started": 1789080238,
-  "checked": 1789400875,
+  "checked": 1789487156,
   "seen": [
     "1799088287779689",
     "1799817379470258",
@@ -1026,6 +1026,7 @@
     "gid:bhvr:556",
     "gid:bhvr:557",
     "gid:bhvr:558",
+    "gid:bhvr:559",
     "gid:bhvr:56",
     "gid:bhvr:57",
     "gid:bhvr:58",
@@ -1087,6 +1088,7 @@
     "patch-title:PTB:1fca330076e7c0e1ecae2576c3099ff3667d25a5defadf3b41676f450cd25077",
     "patch-title:PTB:1fdd114aacecf8db3935c89377a8d4956792c18e400879beb2b384369b4b4f3c",
     "patch-title:PTB:23b2d999cd0b5092bc1f3fdb34dde43c9f349339e256f156d1f457cb5c87f10c",
+    "patch-title:PTB:2fd4e51b903b19c9b3682a2f5d2962f6cbb4fe3d8f65fdc4bc5410f96297b8ef",
     "patch-title:PTB:352945e581cbd7b53e8317837ddbe1bbf5e185045982fc10ec75496be50549f7",
     "patch-title:PTB:3638082728c1e64ff4f76919d7752ed6c17b1bb6a8e58bd6436eef0dea4bdd5d",
     "patch-title:PTB:38f754fb7389d42bf405d3441f9b3587e34bb61895c9e5b96630aa913b92bceb",
@@ -1405,6 +1407,7 @@
     "patch-url:PTB:https://forums.bhvr.com/dead-by-daylight/kb/articles/542-9-6-0-ptb-patch-notes",
     "patch-url:PTB:https://forums.bhvr.com/dead-by-daylight/kb/articles/548-10-0-0-jason-ptb-patch-notes",
     "patch-url:PTB:https://forums.bhvr.com/dead-by-daylight/kb/articles/555-10-1-0-ptb-patch-notes",
+    "patch-url:PTB:https://forums.bhvr.com/dead-by-daylight/kb/articles/559-10-2-0-ptb-patch-notes",
     "patch-url:PTB:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1800357164572266",
     "patch-url:PTB:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1803527891899874",
     "patch-url:PTB:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1809869180003564",
@@ -1799,6 +1802,7 @@
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1842846814455826",
     "patch-version:PTB:10.0.0",
     "patch-version:PTB:10.1.0",
+    "patch-version:PTB:10.2.0",
     "patch-version:PTB:2.0.0",
     "patch-version:PTB:2.1.0",
     "patch-version:PTB:2.2.0",
@@ -2136,18 +2140,7 @@
     "title:f49069402172e02be00ed706b8fa85bcddb8860b025dea71759eb964fef3d10c",
     "title:fd46f366b0158296c3a6e2db549ea2c61ce170b1b8016f3097af2e821648d3ed"
   ],
-  "pending": {
-    "gids": [
-      "bhvr:559"
-    ],
-    "keys": [
-      "gid:bhvr:559",
-      "patch-title:PTB:2fd4e51b903b19c9b3682a2f5d2962f6cbb4fe3d8f65fdc4bc5410f96297b8ef",
-      "patch-url:PTB:https://forums.bhvr.com/dead-by-daylight/kb/articles/559-10-2-0-ptb-patch-notes",
-      "patch-version:PTB:10.2.0"
-    ],
-    "time": 1789487156
-  },
+  "pending": null,
   "bhvr_initialized": true,
-  "last_message_id": "1549084310965977279"
+  "last_message_id": "1549446194743353355"
 }
