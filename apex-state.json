@@ -1,7 +1,7 @@
 {
   "version": 1,
   "started": 1789080904,
-  "checked": 1789412156,
+  "checked": 1789487620,
   "seen": [
     "1827626365754469",
     "1827626365763919",
@@ -208,6 +208,7 @@
     "gid:1842846814443925",
     "gid:1843481262693320",
     "gid:1843481262702712",
+    "gid:1843481262704926",
     "official:aftershock-event",
     "official:breach-anti-cheat-update",
     "official:overclocked-matchmaking-update",
@@ -360,17 +361,9 @@
     "title:d96c6ddc486082ba5584f8784b5c430bb2919668fc4aa77e1acf3b463cc7caa8",
     "title:df791bcf12499da8cc0a586053fa676653623a681536dcb7bbf1c621d4e6f8ab",
     "title:e97408025b73f1b83340b7b841a1eab6d222dffc746196e521ea3873679aedda",
-    "title:ee7318e290f374915a031a7450bafa0586e8a304b18b10eb22f2771a2883466e"
+    "title:ee7318e290f374915a031a7450bafa0586e8a304b18b10eb22f2771a2883466e",
+    "title:ef6f7fc09694f08a2785ceb325d7edfa1ba856b9f2424d94b7542fcd22cf71ab"
   ],
-  "pending": {
-    "gids": [
-      "1843481262704926"
-    ],
-    "keys": [
-      "gid:1843481262704926",
-      "title:ef6f7fc09694f08a2785ceb325d7edfa1ba856b9f2424d94b7542fcd22cf71ab"
-    ],
-    "time": 1789487620
-  },
-  "last_message_id": "1549131613319987294"
+  "pending": null,
+  "last_message_id": "1549448133782806669"
 }
