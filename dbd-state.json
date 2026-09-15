@@ -104,6 +104,8 @@
     "1842846814447263",
     "1842846814455826",
     "1843481262701761",
+    "1843481262704672",
+    "1843481262704854",
     "2094592080064933541",
     "2139633149557922064",
     "2356940080961309356",
@@ -488,6 +490,7 @@
     "bhvr:556",
     "bhvr:557",
     "bhvr:558",
+    "bhvr:559",
     "bhvr:56",
     "bhvr:57",
     "bhvr:58",
@@ -2133,7 +2136,18 @@
     "title:f49069402172e02be00ed706b8fa85bcddb8860b025dea71759eb964fef3d10c",
     "title:fd46f366b0158296c3a6e2db549ea2c61ce170b1b8016f3097af2e821648d3ed"
   ],
-  "pending": null,
+  "pending": {
+    "gids": [
+      "bhvr:559"
+    ],
+    "keys": [
+      "gid:bhvr:559",
+      "patch-title:PTB:2fd4e51b903b19c9b3682a2f5d2962f6cbb4fe3d8f65fdc4bc5410f96297b8ef",
+      "patch-url:PTB:https://forums.bhvr.com/dead-by-daylight/kb/articles/559-10-2-0-ptb-patch-notes",
+      "patch-version:PTB:10.2.0"
+    ],
+    "time": 1789487156
+  },
   "bhvr_initialized": true,
   "last_message_id": "1549084310965977279"
 }
