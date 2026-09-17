@@ -1,7 +1,7 @@
 {
   "version": 1,
   "started": 1789081512,
-  "checked": 1789081512,
+  "checked": 1789669646,
   "seen": [
     "1790214123057029",
     "1791482680864453",
@@ -222,6 +222,7 @@
     "gid:blizzard-live:patch-2026-08-20",
     "gid:blizzard-live:patch-2026-09-08",
     "gid:blizzard-live:patch-2026-09-10",
+    "gid:blizzard-live:patch-2026-09-16",
     "official:22562447",
     "official:24003139",
     "official:24056255",
@@ -245,6 +246,7 @@
     "patch-date:通常サーバー:2026-08-20",
     "patch-date:通常サーバー:2026-09-08",
     "patch-date:通常サーバー:2026-09-10",
+    "patch-date:通常サーバー:2026-09-16",
     "patch-title:通常サーバー:2024-02-13:b8b5f736bf54a5a5b875fa6818d28c9bce2695ce2a53f1762d80d97644e4321b",
     "patch-title:通常サーバー:2024-02-22:d0fb510c84b3d3928b1f88cf78ec555b2b892b66ff5329a9524a63b59c6b72ce",
     "patch-title:通常サーバー:2024-04-16:a90284b2ee0e393f6f336c13d2c0da4e0595fbe5d03d4654a1f1739b253b6f3a",
@@ -261,6 +263,7 @@
     "patch-title:通常サーバー:2026-08-20:d1c151cc1547d73a2bbdbdb89b11c14f3f7aacea38640fe566f501403591cc7b",
     "patch-title:通常サーバー:2026-09-08:d2bfd0f25e2340df91cb77cf73a9f12bb8870b84b6ed79a09e68f96e2b2bb590",
     "patch-title:通常サーバー:2026-09-10:384f41d5e6995aef9a2f19f6aa25afc619728b61b3d2abcf55682289a73e1afb",
+    "patch-title:通常サーバー:2026-09-16:d0e53e8c5530337f72d9ce3610115cca3ca74a2daf6c257381908726a83a9b96",
     "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/08/#patch-2026-08-04",
     "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/08/#patch-2026-08-11",
     "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/08/#patch-2026-08-12",
@@ -269,6 +272,7 @@
     "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/08/#patch-2026-08-20",
     "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/09/#patch-2026-09-08",
     "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/09/#patch-2026-09-10",
+    "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/09/#patch-2026-09-16",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1800357164361035",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/5589599109284791509",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/5728086065180864248",
@@ -361,16 +365,6 @@
     "title:fa57ea363b53214784ec7a8ef9feadf88e4d3fa3235119ddef56714713a1b9dd",
     "title:ffb9dd3f0a7fa9df574eef7222200d906726736626e580bff2a9be4a7f539d25"
   ],
-  "pending": {
-    "gids": [
-      "blizzard-live:patch-2026-09-16"
-    ],
-    "keys": [
-      "gid:blizzard-live:patch-2026-09-16",
-      "patch-date:通常サーバー:2026-09-16",
-      "patch-title:通常サーバー:2026-09-16:d0e53e8c5530337f72d9ce3610115cca3ca74a2daf6c257381908726a83a9b96",
-      "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/09/#patch-2026-09-16"
-    ],
-    "time": 1789669646
-  }
+  "pending": null,
+  "last_message_id": "1550211607634776109"
 }
