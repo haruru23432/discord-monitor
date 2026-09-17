@@ -106,6 +106,7 @@
     "1843481262701761",
     "1843481262704672",
     "1843481262704854",
+    "1844115010492341",
     "2094592080064933541",
     "2139633149557922064",
     "2356940080961309356",
@@ -642,6 +643,8 @@
     "gid:1842846814447263",
     "gid:1842846814455826",
     "gid:1843481262701761",
+    "gid:1843481262704672",
+    "gid:1843481262704854",
     "gid:2094592080064933541",
     "gid:2139633149557922064",
     "gid:2356940080961309356",
@@ -1417,6 +1420,7 @@
     "patch-url:PTB:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1828894815567573",
     "patch-url:PTB:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1833334318579520",
     "patch-url:PTB:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1839676055897511",
+    "patch-url:PTB:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1843481262704854",
     "patch-url:通常サーバー:https://forums.bhvr.com/dead-by-daylight/kb/articles/1-1-9-4-1-9-4c-emblems",
     "patch-url:通常サーバー:https://forums.bhvr.com/dead-by-daylight/kb/articles/10-2-6-3-ash-vs-evil-dead",
     "patch-url:通常サーバー:https://forums.bhvr.com/dead-by-daylight/kb/articles/100-3-3-0-mid-chapter",
@@ -2081,6 +2085,7 @@
     "title:335a26a69cb8071dea446c39ef301e17a26d62e6429faa8d7ce1eada9dc89769",
     "title:35532045e2418d8f5d7abb0e41bf3924957297e8990f4010d56095e1be1bc35b",
     "title:35edb03f46638148dc386baebeff391b1a190db3879c3236b5c33a8abd8e551f",
+    "title:361e52efe4cc020490c8a75253f3aaebf25134025619ca267b2bb89a3c7fcd1f",
     "title:3ffdef485221baab7df3ee86741a79c57e5ce43c3b5913620f296807cb99b8ff",
     "title:4696723867901fc3b13ad5daf4f4eb9f9171a17bd8fdba1d67dfa539dd22e1e1",
     "title:48c04bbb87f72faecf25ed0ea706786285f18548013d0c3e29228ab8541f176f",
@@ -2140,7 +2145,16 @@
     "title:f49069402172e02be00ed706b8fa85bcddb8860b025dea71759eb964fef3d10c",
     "title:fd46f366b0158296c3a6e2db549ea2c61ce170b1b8016f3097af2e821648d3ed"
   ],
-  "pending": null,
+  "pending": {
+    "gids": [
+      "1844115010492341"
+    ],
+    "keys": [
+      "gid:1844115010492341",
+      "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1844115010492341"
+    ],
+    "time": 1789659906
+  },
   "bhvr_initialized": true,
   "last_message_id": "1549446194743353355"
 }
