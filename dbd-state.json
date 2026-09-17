@@ -1,7 +1,7 @@
 {
   "version": 1,
   "started": 1789080238,
-  "checked": 1789487156,
+  "checked": 1789659906,
   "seen": [
     "1799088287779689",
     "1799817379470258",
@@ -645,6 +645,7 @@
     "gid:1843481262701761",
     "gid:1843481262704672",
     "gid:1843481262704854",
+    "gid:1844115010492341",
     "gid:2094592080064933541",
     "gid:2139633149557922064",
     "gid:2356940080961309356",
@@ -1804,6 +1805,7 @@
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1841579228678469",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1842212951313573",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1842846814455826",
+    "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1844115010492341",
     "patch-version:PTB:10.0.0",
     "patch-version:PTB:10.1.0",
     "patch-version:PTB:10.2.0",
@@ -2145,16 +2147,7 @@
     "title:f49069402172e02be00ed706b8fa85bcddb8860b025dea71759eb964fef3d10c",
     "title:fd46f366b0158296c3a6e2db549ea2c61ce170b1b8016f3097af2e821648d3ed"
   ],
-  "pending": {
-    "gids": [
-      "1844115010492341"
-    ],
-    "keys": [
-      "gid:1844115010492341",
-      "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1844115010492341"
-    ],
-    "time": 1789659906
-  },
+  "pending": null,
   "bhvr_initialized": true,
-  "last_message_id": "1549446194743353355"
+  "last_message_id": "1550170760780447758"
 }
