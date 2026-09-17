@@ -111,7 +111,8 @@
     "blizzard-live:patch-2026-08-20",
     "blizzard-live:patch-2026-09-08",
     "blizzard-live:patch-2026-09-10",
-    "blizzard-live:patch-2026-09-16"
+    "blizzard-live:patch-2026-09-16",
+    "blizzard-live:patch-2026-09-17"
   ],
   "sent": [
     "gid:1790214123057029",
@@ -365,6 +366,17 @@
     "title:fa57ea363b53214784ec7a8ef9feadf88e4d3fa3235119ddef56714713a1b9dd",
     "title:ffb9dd3f0a7fa9df574eef7222200d906726736626e580bff2a9be4a7f539d25"
   ],
-  "pending": null,
+  "pending": {
+    "gids": [
+      "blizzard-live:patch-2026-09-17"
+    ],
+    "keys": [
+      "gid:blizzard-live:patch-2026-09-17",
+      "patch-date:通常サーバー:2026-09-17",
+      "patch-title:通常サーバー:2026-09-17:d0e53e8c5530337f72d9ce3610115cca3ca74a2daf6c257381908726a83a9b96",
+      "patch-url:通常サーバー:https://overwatch.blizzard.com/en-us/news/patch-notes/live/2026/09/#patch-2026-09-17"
+    ],
+    "time": 1789680213
+  },
   "last_message_id": "1550211607634776109"
 }
