@@ -104,7 +104,8 @@
     "1842846814443925",
     "1843481262693320",
     "1843481262702712",
-    "1843481262704926"
+    "1843481262704926",
+    "1844115010492838"
   ],
   "sent": [
     "gid:1827626365754469",
@@ -364,6 +365,16 @@
     "title:ee7318e290f374915a031a7450bafa0586e8a304b18b10eb22f2771a2883466e",
     "title:ef6f7fc09694f08a2785ceb325d7edfa1ba856b9f2424d94b7542fcd22cf71ab"
   ],
-  "pending": null,
+  "pending": {
+    "gids": [
+      "1844115010492838"
+    ],
+    "keys": [
+      "gid:1844115010492838",
+      "patch-title:通常サーバー:2026-09-17:ed2177b23e833812dda85bb2f380fb1205e40b9a76be6e6c71d61f2ad05c90e0",
+      "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1844115010492838"
+    ],
+    "time": 1789671280
+  },
   "last_message_id": "1549448133782806669"
 }
