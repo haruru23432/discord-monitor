@@ -1,7 +1,7 @@
 {
   "version": 1,
   "started": 1789080904,
-  "checked": 1789757459,
+  "checked": 1790016851,
   "seen": [
     "1827626365754469",
     "1827626365763919",
@@ -213,6 +213,7 @@
     "gid:1843481262702712",
     "gid:1843481262704926",
     "gid:1844115010492838",
+    "gid:1844115010502111",
     "official:aftershock-event",
     "official:breach-anti-cheat-update",
     "official:overclocked-matchmaking-update",
@@ -272,6 +273,7 @@
     "patch-title:通常サーバー:2026-09-03:31cc3c164405e7b0bdebca53daa851218cf2b74208fc2ccd9e4b7d9651c40333",
     "patch-title:通常サーバー:2026-09-14:e6e67bdee54572de71d8b8a74e5f02bed59592156e9458a6c540b523999d402a",
     "patch-title:通常サーバー:2026-09-17:ed2177b23e833812dda85bb2f380fb1205e40b9a76be6e6c71d61f2ad05c90e0",
+    "patch-title:通常サーバー:2026-09-21:9f14e3914e680ab92535068bb2a3bbdf9baf9fc049163fdb2c2c7b5123f51748",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1827626365763919",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1827626365767126",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1828441623103305",
@@ -329,6 +331,7 @@
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1842846814443925",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1843481262702712",
     "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1844115010492838",
+    "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1844115010502111",
     "title:018461ea7aed461ab82e1a1e736c328191f5770b04d65c27914f2770dfbb3d58",
     "title:04c68200e0a8713e541c4eadfacec71a9573e04307889a7299fef0cec8cac606",
     "title:089c4914a0df63321578bf7a6a64533ba6b75b68d970ae08e6c82e8096064188",
@@ -370,16 +373,6 @@
     "title:ee7318e290f374915a031a7450bafa0586e8a304b18b10eb22f2771a2883466e",
     "title:ef6f7fc09694f08a2785ceb325d7edfa1ba856b9f2424d94b7542fcd22cf71ab"
   ],
-  "pending": {
-    "gids": [
-      "1844115010502111"
-    ],
-    "keys": [
-      "gid:1844115010502111",
-      "patch-title:通常サーバー:2026-09-21:9f14e3914e680ab92535068bb2a3bbdf9baf9fc049163fdb2c2c7b5123f51748",
-      "patch-url:通常サーバー:https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1844115010502111"
-    ],
-    "time": 1790016851
-  },
-  "last_message_id": "1550218456765571115"
+  "pending": null,
+  "last_message_id": "1551667892356128840"
 }
