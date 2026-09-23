@@ -4,390 +4,43 @@ on:
   schedule:
     - cron: '37 */3 * * *'
   workflow_dispatch:
+    inputs:
+      test_notification:
+        description: '通知先とUser IDメンションを接続テスト（同一検証は再送しません）'
+        type: boolean
+        default: false
+      recovery_days:
+        description: '再評価期間。通常7日、導入時のみ14日'
+        type: choice
+        options: ['7', '14']
+        default: '7'
 
 permissions:
   contents: write
 
+# All monitors share one durable delivery ledger; serialize its read/modify/write.
 concurrency:
-  group: dbd-important-news-monitor
+  group: discord-monitor-delivery
   cancel-in-progress: false
 
 jobs:
   monitor:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
+    timeout-minutes: 8
     steps:
-      - name: Check important DbD news
+      - uses: actions/checkout@v4
+      - name: Verify delivery safety
+        run: python3 -m unittest -b -q test_monitor
+      - name: Check important information
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DISCORD_WEBHOOK_IMPORTANT: ${{ secrets.DISCORD_WEBHOOK_IMPORTANT }}
+          DISCORD_WEBHOOK_OW: ${{ secrets.DISCORD_WEBHOOK_OW }}
           DISCORD_WEBHOOK_DBD: ${{ secrets.DISCORD_WEBHOOK_DBD }}
-        shell: python
-        run: |
-          import base64
-          import hashlib
-          import html
-          import json
-          import os
-          import re
-          import sys
-          import time
-          import urllib.error
-          import urllib.parse
-          import urllib.request
-          from datetime import datetime, timezone
-
-          BRANCH = "dbd-monitor-state"
-          PATH = "dbd-state.json"
-          UA = "DbDImportantNewsMonitor/2.0"
-          BHVR = "bhvr_patch_notes"
-          SOURCE_FAILURES = []
-
-
-          def fetch_bhvr(since):
-              # Public, unauthenticated Vanilla API; follow its pagination metadata.
-              url = "https://forums.bhvr.com/api/v2/articles?limit=100"
-              result, visited = [], set()
-              for _ in range(15):
-                  p = urllib.parse.urlsplit(url)
-                  if p.scheme != "https" or p.netloc != "forums.bhvr.com" or p.path != "/api/v2/articles" or url in visited:
-                      raise RuntimeError("Unexpected BHVR pagination")
-                  visited.add(url)
-                  with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=30) as response:
-                      page = json.load(response)
-                      next_url = response.headers.get("x-app-page-next-url")
-                  if not isinstance(page, list):
-                      raise RuntimeError("Unexpected BHVR response")
-                  for row in page:
-                      if row.get("knowledgeBaseID") != 1 or row.get("status") != "published" or row.get("locale") != "en":
-                          continue
-                      article_url = row["url"]
-                      if not article_url.startswith("https://forums.bhvr.com/dead-by-daylight/kb/articles/"):
-                          raise RuntimeError("Unexpected BHVR article URL")
-                      published = int(datetime.fromisoformat(row["dateInserted"]).timestamp())
-                      item = dict(gid="bhvr:" + str(row["articleID"]), title=row["name"],
-                          url=article_url, date=published, contents="", feedname=BHVR)
-                      if patch_channel(item) and published <= int(time.time()):
-                          result.append(item)
-                  if not next_url:
-                      if not result:
-                          raise RuntimeError("BHVR patch notes are empty")
-                      return result
-                  url = urllib.parse.urljoin(url, next_url)
-              raise RuntimeError("BHVR pagination limit exceeded")
-
-
-          def request(url, data=None, headers=None, method=None):
-              body = None if data is None else json.dumps(data).encode("utf-8")
-              req = urllib.request.Request(url, data=body, method=method,
-                  headers={"User-Agent": UA, "Content-Type": "application/json", **(headers or {})})
-              with urllib.request.urlopen(req, timeout=30) as response:
-                  return json.load(response)
-
-
-          def plain(value):
-              value = re.sub(r"<[^>]+>|\[[^\]]+\]", " ", value)
-              return re.sub(r"\s+", " ", html.unescape(value)).strip()
-
-
-          def patch_channel(item):
-              if item.get("feedname") not in ("steam_community_announcements", BHVR):
-                  return None
-              # Keep [PTB] in titles; plain() removes bracketed formatting.
-              title = html.unescape(re.sub(r"<[^>]+>", " ", item["title"])).lower()
-              patch = re.search(r"\b(patch(?:\s+notes?)?|hot[ -]?fix|bug[ -]?fix)\b|パッチノート|ホットフィックス|バグ修正", title)
-              version_title = re.match(r"\s*(?:\[?(?:ptb|live)\]?\s*[-|:]?\s*)?\d+\.\d+\.\d+\b", title)
-              if not (patch or version_title):
-                  return None
-              if re.search(r"\b(ptb|public test build)\b|公開テスト", title):
-                  return "PTB"
-              return "通常サーバー"
-
-
-          def category(item):
-              channel = patch_channel(item)
-              if channel:
-                  return "公式パッチノート（" + channel + "）"
-              title = plain(item["title"]).lower()
-              intro = plain(item.get("contents", ""))[:1600].lower()
-              if re.search(r"\b(hotfix|bugfix|bug fix|known issues|kill switch|weekly|sale|discount|giveaway|codes?|survey|contest|livestream|livestreaming|recap)\b", title):
-                  return None
-              if re.search(r"\b(rumou?r|leak|speculation|wishlist|wish list|concept)\b", title):
-                  return None
-              version = re.search(r"\b(\d+\.\d+\.(\d+))\b", title)
-              if version:
-                  if version[2] != "0":
-                      return None
-                  if re.search(r"\b(ptb|public test build)\b", title):
-                      return "大型アップデート（テスト版）"
-                  return "大型アップデート"
-              if re.search(r"\b(chapter|dlc|new killer|new survivor|all-new killer|all-new survivor)\b", title):
-                  return "新チャプター・新キャラクター"
-              if re.search(r"\b(collaboration|crossover|collab)\b|dead by daylight\s*[x×]", title):
-                  return "コラボ"
-              if re.search(r"\b(event|limited.time mode|2v8|2 vs\.? 8|lights out|chaos shuffle|blood moon|bloodmoon|haunted by daylight|bone chill|twisted masquerade|scorching summer|lunar new year)\b", title):
-                  return "期間限定イベント・モード"
-              if re.search(r"\b(major update|mid.chapter|anniversary|roadmap)\b", title):
-                  return "大型更新・今後の重要予定"
-              # Some official announcements use only the chapter/collaboration name as title.
-              # Require an explicit announcement in the introduction; incidental mentions do not count.
-              if re.search(r"\b(introducing|introduces|announcing|announce|reveal|releases?|launches?|out now|available now)\b", title + " " + intro[:600]):
-                  if re.search(r"\b(new chapter|new killer|new survivor|all-new killer|all-new survivor)\b", intro[:600]):
-                      return "新チャプター・新キャラクター"
-                  if re.search(r"\b(collaboration|crossover)\b", intro[:600]):
-                      return "コラボ"
-              return None
-
-
-          def keys(item):
-              result = {"gid:" + str(item["gid"])}
-              title = re.sub(r"\W+", "", plain(item["title"]).casefold())
-              channel = patch_channel(item)
-              if channel:
-                  # A patch can link to older notes. Those references must never suppress
-                  # the new patch, nor should PTB and live notes suppress each other.
-                  result.add("patch-url:" + channel + ":" + item["url"].split("?")[0])
-                  if re.search(r"\b\d+\.\d+\.\d+\b", item["title"]):
-                      version = re.search(r"\b\d+\.\d+\.\d+\b", item["title"])[0]
-                      result.add("patch-version:" + channel + ":" + version)
-                      result.add("patch-title:" + channel + ":" + hashlib.sha256(title.encode()).hexdigest())
-                  return result
-              result.add("title:" + hashlib.sha256(title.encode()).hexdigest())
-              # Shared official article links deduplicate syndicated coverage.
-              text = html.unescape(item.get("contents", "")) + " " + item["url"]
-              for url in re.findall(r'https?://[^\s<>"\]\)]+', text):
-                  p = urllib.parse.urlsplit(url.rstrip(".,;"))
-                  host = (p.hostname or "").lower()
-                  if host in ("deadbydaylight.com", "www.deadbydaylight.com"):
-                      match = re.search(r"/(?:[a-z]{2}/)?news/([^/]+)", p.path)
-                      if match:
-                          result.add("official:" + match[1].lower())
-                  if host == "steamcommunity.com":
-                      match = re.search(r"/(?:announcements/detail|detail)/(\d+)", p.path)
-                      if match:
-                          result.add("steam:" + match[1])
-              return result
-
-
-          def make_embed(item, label, is_aux):
-              is_patch = patch_channel(item) is not None
-              title = html.unescape(re.sub(r"<[^>]+>", " ", item["title"]))
-              source = "PC Gamer（公式発表を引用した補助情報）" if is_aux else ("BHVR公式パッチノート" if item["feedname"] == BHVR else "DbD公式・Steamニュース")
-              description = ("優先度：最優先\n" if is_patch else "") + "分類：" + label + "\n情報源：" + source
-              description += "\n\n" + ("パッチノートはこちら：" if is_patch else "記事はこちら：") + "\n" + item["url"]
-              return {"title": title[:256], "url": item["url"], "description": description,
-                  "color": 15158332 if is_patch else 11141120,
-                  "timestamp": datetime.fromtimestamp(int(item["date"]), timezone.utc).isoformat()}
-
-
-          def fetch(feed, since):
-              result = []
-              end = int(time.time()) + 1
-              for _ in range(10):
-                  query = urllib.parse.urlencode({"appid": 381210, "count": 100,
-                      "maxlength": 0, "feeds": feed, "enddate": end, "format": "json"})
-                  obj = request("https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?" + query)
-                  app = obj["appnews"]
-                  if int(app["appid"]) != 381210 or not isinstance(app["newsitems"], list):
-                      raise RuntimeError("Unexpected Steam response")
-                  page = app["newsitems"]
-                  for item in page:
-                      if item.get("feedname") != feed:
-                          raise RuntimeError("Unexpected Steam source")
-                      if not all(item.get(k) for k in ("gid", "title", "url", "date")):
-                          raise RuntimeError("Incomplete Steam article")
-                      if int(item["date"]) <= int(time.time()):
-                          result.append(item)
-                  if len(page) < 100 or min(int(x["date"]) for x in page) <= since:
-                      return result
-                  next_end = min(int(x["date"]) for x in page)
-                  if next_end >= end:
-                      raise RuntimeError("Steam pagination did not advance")
-                  end = next_end
-              raise RuntimeError("News backlog too large; no notification was sent")
-
-
-          def main():
-              token = os.environ["GH_TOKEN"]
-              webhook = os.environ.get("DISCORD_WEBHOOK_DBD", "").strip()
-              p = urllib.parse.urlsplit(webhook)
-              if p.scheme != "https" or p.hostname not in ("discord.com", "discordapp.com") or not p.path.startswith("/api/webhooks/"):
-                  raise RuntimeError("DISCORD_WEBHOOK_DBD is missing or invalid")
-              api = os.environ["GITHUB_API_URL"] + "/repos/" + os.environ["GITHUB_REPOSITORY"]
-              headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}
-
-              def gh(path, data=None, method=None):
-                  return request(api + path, data, headers, method)
-
-              try:
-                  gh("/git/ref/heads/" + BRANCH)
-              except urllib.error.HTTPError as error:
-                  if error.code != 404:
-                      raise
-                  gh("/git/refs", {"ref": "refs/heads/" + BRANCH, "sha": os.environ["GITHUB_SHA"]})
-
-              sha = None
-              state = None
-              try:
-                  saved = gh("/contents/" + PATH + "?ref=" + BRANCH)
-                  sha = saved["sha"]
-                  state = json.loads(base64.b64decode(saved["content"]))
-                  if state.get("version") != 1 or not isinstance(state.get("seen"), list) or not isinstance(state.get("sent"), list):
-                      raise RuntimeError("Invalid saved state; refusing to reset history")
-              except urllib.error.HTTPError as error:
-                  if error.code != 404:
-                      raise
-                  # Missing history after prior use must not silently reset deduplication.
-                  prior = gh("/commits?sha=" + BRANCH + "&path=" + PATH + "&per_page=1")
-                  if prior:
-                      raise RuntimeError("History was deleted; restore dbd-state.json before running")
-
-              def save():
-                  nonlocal sha
-                  data = {"message": "Update DbD monitor history [skip ci]", "branch": BRANCH,
-                      "content": base64.b64encode(json.dumps(state, ensure_ascii=False, indent=2).encode()).decode()}
-                  if sha:
-                      data["sha"] = sha
-                  response = gh("/contents/" + PATH, data, "PUT")
-                  sha = response["content"]["sha"]
-
-              def summary(message):
-                  print(message)
-                  with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
-                      f.write(message + "\n\n")
-
-              if state and state.get("pending"):
-                  summary("⚠️ 前回のDiscord送信結果が確定していません。重複防止のため停止しました。Discordと dbd-monitor-state ブランチの履歴を確認してください。")
-                  raise RuntimeError("Unresolved pending delivery; automatic resend disabled")
-
-              now = int(time.time())
-              since = max(state["started"], state["checked"] - 7 * 86400) if state else now
-              SOURCE_FAILURES.clear()
-              try:
-                  direct = fetch_bhvr(since)
-              except Exception:
-                  direct = []
-                  SOURCE_FAILURES.append("BHVR")
-                  summary("⚠️ BHVR公式の直接取得に失敗しました。Steam監視を継続します。")
-              try:
-                  steam = fetch("steam_community_announcements", since)
-              except Exception:
-                  steam = []
-                  SOURCE_FAILURES.append("Steam")
-              official = direct + steam
-              if not official:
-                  raise RuntimeError("Official news is empty; history was not updated")
-              try:
-                  auxiliary = fetch("pcgamer", since)
-              except Exception:
-                  auxiliary = []
-                  summary("⚠️ PC Gamerの補助情報は取得できませんでした。今回は公式情報のみ確認します。")
-              summary("取得件数：公式 " + str(len(official)) + " 件／PC Gamer " + str(len(auxiliary)) + " 件。記事の見出しと本文冒頭をルールで判定します。")
-
-              if state is None:
-                  state = {"version": 1, "started": now, "checked": now,
-                      "seen": sorted({str(x["gid"]) for x in official + auxiliary}),
-                      "sent": sorted(set().union(*(keys(x) for x in official + auxiliary))), "pending": None}
-                  state["bhvr_initialized"] = bool(direct)
-                  save()
-                  summary("✅ DbD監視を初期化しました。過去記事は通知しません。次回から重要な新着を確認します。")
-                  return
-
-              # Upgrade deduplication from already-seen Steam posts before adding a source.
-              for item in steam:
-                  if str(item["gid"]) in state["seen"]:
-                      state["sent"] = sorted(set(state["sent"]) | keys(item))
-              if direct and not state.get("bhvr_initialized"):
-                  # Establish a baseline; adding BHVR must not dump historical articles.
-                  state["seen"] = sorted(set(state["seen"]) | {x["gid"] for x in direct})
-                  state["sent"] = sorted(set(state["sent"]) | set().union(*(keys(x) for x in direct)))
-                  state["bhvr_initialized"] = True
-                  save()
-                  summary("✅ BHVR公式監視を追加しました。既存記事は通知せず、次回から新着を確認します。")
-              original_seen = set(state["seen"])
-              seen = set(original_seen)
-              sent = set(state["sent"])
-              candidates = []
-              all_official_keys = set().union(*(keys(x) for x in official))
-              official.sort(key=lambda x: (patch_channel(x) is None, int(x["date"])))
-              for item in official + sorted(auxiliary, key=lambda x: int(x["date"])):
-                  gid = str(item["gid"])
-                  if gid in seen:
-                      continue
-                  auxiliary_item = item["feedname"] not in ("steam_community_announcements", BHVR)
-                  # Give the official announcement a 24-hour head start.
-                  if auxiliary_item and int(item["date"]) > now - 86400:
-                      continue
-                  seen.add(gid)
-                  if int(item["date"]) <= state["started"]:
-                      continue
-                  label = category(item)
-                  article_keys = keys(item)
-                  if not label or article_keys & sent:
-                      continue
-                  if auxiliary_item:
-                      # Supplement only reporting that cites a specific official announcement.
-                      if not any(k.startswith(("official:", "steam:")) for k in article_keys):
-                          continue
-                      if article_keys & all_official_keys:
-                          continue
-                  candidates.append((item, label, article_keys, auxiliary_item))
-                  sent.update(article_keys)
-
-              # Respect both Discord's 10-embed and 6000-character message limits.
-              batch, embeds = [], []
-              characters = 0
-              for candidate in candidates[:10]:
-                  item, label, _, is_aux = candidate
-                  embed = make_embed(item, label, is_aux)
-                  size = len(embed["title"]) + len(embed["description"])
-                  if characters + size > 5500:
-                      break
-                  batch.append(candidate)
-                  embeds.append(embed)
-                  characters += size
-              if candidates and not batch:
-                  raise RuntimeError("News URL is too long for Discord; no article was marked as sent")
-              for item, _, _, _ in candidates[len(batch):]:
-                  seen.discard(str(item["gid"]))
-              state["seen"] = sorted(seen)
-              if not batch:
-                  # A weekly history update also records that the monitor is still active.
-                  if seen != original_seen or now - state["checked"] >= 7 * 86400:
-                      state["checked"] = now
-                      save()
-                  summary("✅ 確認完了。通知対象の重要な新着はありません。")
-                  return
-
-              state["pending"] = {"gids": [str(x[0]["gid"]) for x in batch],
-                  "keys": sorted(set().union(*(x[2] for x in batch))), "time": now}
-              save()  # Persist before sending: an ambiguous failure must never auto-resend.
-              delivery_url = urllib.parse.urlunsplit(p._replace(query="wait=true"))
-              response = request(delivery_url, {"content": "🔔 Dead by Daylight 重要情報",
-                  "embeds": embeds, "allowed_mentions": {"parse": []}})
-              if not response.get("id"):
-                  raise RuntimeError("Discord did not confirm a message ID")
-              state["sent"] = sorted(set(state["sent"]) | set(state["pending"]["keys"]))
-              state["last_message_id"] = response["id"]
-              state["pending"] = None
-              state["checked"] = now
-              save()
-              summary("✅ 重要な新着を " + str(len(batch)) + " 件通知しました。")
-
-
-          if __name__ == "__main__":
-              try:
-                  main()
-                  if SOURCE_FAILURES:
-                      raise RuntimeError("一部の公式情報源を取得できませんでした。取得できた情報源の監視は実施済みです。")
-              except RuntimeError as error:
-                  print("::error::" + str(error))
-                  sys.exit(1)
-              except urllib.error.HTTPError as error:
-                  print("::error::外部サービスがHTTP " + str(error.code) + " を返しました。Actionsの権限・Secrets・通知履歴を確認してください。")
-                  sys.exit(1)
-              except Exception as error:
-                  # Never print exception text that may contain a webhook URL or token.
-                  print("::error::監視を安全に停止しました（" + type(error).__name__ + "）。通信・入力・保存履歴を確認してください。")
-                  sys.exit(1)
+          DISCORD_WEBHOOK_APEX: ${{ secrets.DISCORD_WEBHOOK_APEX }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
+          TEST_NOTIFICATION: ${{ inputs.test_notification || false }}
+          RECOVERY_DAYS: ${{ inputs.recovery_days || '7' }}
+        run: python3 monitor.py dbd
