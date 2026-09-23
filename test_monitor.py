@@ -62,6 +62,19 @@ class PolicyTests(unittest.TestCase):
         s=state(); s['sent']=list(m.scoped_keys(old))
         self.assertEqual(len(m.plan(s,[new],NOW)['queue']),1)
 
+    def test_steam_headline_and_japanese_publisher_slug(self):
+        en=item('apex','Apex Legends VS Street Fighter 6 Event',url='https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/123',gid='123')
+        ja=item('apex','ストリートファイター6イベント開催',url='https://www.ea.com/ja/games/apex-legends/apex-legends/news/street-fighter-6-event',language='ja')
+        s=state(); s['sent']=['apex:gid:123']
+        self.assertFalse(m.plan(s,[en,ja],NOW)['queue'])
+        self.assertEqual(len(m.plan(state(),[en,ja],NOW)['queue']),1)
+
+    def test_event_followup_is_separate(self):
+        old=item('apex','Apex Legends VS Street Fighter 6 Event')
+        new=item('apex','Street Fighter 6 Event extended',url='https://www.ea.com/ja/games/apex-legends/apex-legends/news/street-fighter-6-event-extended',body='Major event dates changed.')
+        s=state(); s['sent']=list(m.scoped_keys(old))
+        self.assertEqual(len(m.plan(s,[new],NOW)['queue']),1)
+
     def test_seven_day_window_and_explicit_fourteen(self):
         a=item(date=NOW-10*m.DAY)
         self.assertFalse(m.plan(state(),[a],NOW)['queue'])
@@ -117,6 +130,13 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(rows)
         self.assertIn('discord-official',failures)
         self.assertEqual(unavailable,['discord'])
+
+    def test_transient_source_failure_retries_read_only(self):
+        with patch.object(m.sources,'fetch_source',side_effect=[TimeoutError(), []]) as fetch, patch.object(m.time,'sleep'):
+            _, failures, unavailable=m.collect(['discord'],NOW)
+        self.assertEqual(fetch.call_count,2)
+        self.assertFalse(failures)
+        self.assertFalse(unavailable)
 
     def test_one_official_source_success_preserves_monitoring(self):
         def fetch(source, now):
@@ -229,7 +249,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_payload_useful_fields(self):
         p=m.payload(self.article,USER)
-        for text in ('内容','影響','推奨対応','情報源','September 24'):
+        for text in ('内容','影響','推奨対応','情報源','記事公開日'):
             self.assertIn(text,p['embeds'][0]['description'])
         self.assertIn('<@'+USER+'>',p['content'])
 

@@ -287,6 +287,18 @@ def keys(item):
         match = re.search(r'/news/([^/]+)', path)
         if match:
             result.add('official:' + match[1].lower())
+    # Official Steam announcements often have a different ID and Japanese title.
+    # Match their English headline to the publisher's own descriptive URL slug.
+    # Never use body links (which can point to older, unrelated announcements).
+    if item['official'] and item['topic'] in sources.GAMES and item.get('date'):
+        candidate = item['title']
+        if news_url(item['url'], item['topic']):
+            candidate = p.path.rstrip('/').rsplit('/', 1)[-1]
+        candidate = re.sub(r'apex[\s-]+legends|dead[\s-]+by[\s-]+daylight|overwatch|\bvs\b', '', candidate, flags=re.I)
+        words = re.findall(r'[a-z0-9]+', candidate.lower())
+        if len(words) >= 3 and not re.search(r'[ぁ-んァ-ヶ一-龯]', candidate):
+            year = datetime.fromtimestamp(item['date'], timezone.utc).year
+            result.add('headline-slug:' + str(year) + ':' + '-'.join(words))
     if host == 'steamcommunity.com':
         match = re.search(r'/(?:announcements/detail|detail)/(\d+)', path)
         if match:
@@ -368,6 +380,7 @@ def plan(state, items, now, days=7):
     for item in items:
         if {item['topic'] + ':' + k for k in keys(item)} & selected_keys:
             selected_keys.update(scoped_keys(item))
+    state['sent'] = sorted(selected_keys)
     for pending in state['pending'].values():
         selected_keys.update(pending['keys'])
     for queued in state['queue'].values():
@@ -424,15 +437,14 @@ def payload(item, user):
     action = '発表内容と実施日を確認してください。設定変更などの必須対応は、この取得内容からは確認できていません。'
     if item['topic'] == 'windows':
         action = '対象環境・更新番号が一致するか確認してください。更新の削除や設定変更は、公式の回避策が適用される場合に限って検討してください。'
-    body = sources.clean(item['body'])
-    # Include source-grounded dates and instructions; translate with the same free adapter.
-    dates = re.findall(r'\b20\d{2}-\d{2}-\d{2}\b|\b(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}(?:, 20\d{2})?|\d{1,2}月\d{1,2}日', body)
     description = ('※取得済みの未送信情報を再評価しました。\n' if item.get('recovered') else '')
     description += '**内容**\n' + summary + '\n\n**影響**\n' + impact
     if item.get('environment'):
         description += '\n\n**対象環境**\n' + item['environment']
-    if dates:
-        description += '\n\n**本文で案内されている日付**\n' + ' / '.join(dict.fromkeys(dates))[:220] + '（用途・時刻は上記の内容または原文を確認）'
+    # Event dates stay attached to their explanatory sentence in the summary.
+    # Scanning every date in the page also captured related-article dates.
+    if item.get('date'):
+        description += '\n\n**記事公開日（UTC）**\n' + datetime.fromtimestamp(item['date'], timezone.utc).strftime('%Y-%m-%d')
     description += '\n\n**推奨対応**\n' + action
     description += '\n\n**情報源**\n' + item['source'] + ('（公式）' if item['official'] else '（補助情報）') + '\n' + item['url']
     return {'content': '<@' + user + '> ' + sources.NAMES[item['topic']] + '｜重要情報',
@@ -497,8 +509,15 @@ def collect(topics, now):
             return source, rows, None
         except Exception as error:
             return source, [], type(error).__name__ + (':' + str(error.code) if isinstance(error, urllib.error.HTTPError) else '')
+    def fetch_with_retry(source):
+        for attempt in range(3):
+            result = fetch(source)
+            error = result[2] or ''
+            if not error.startswith(('URLError', 'TimeoutError', 'ConnectionError', 'HTTPError:429', 'HTTPError:5')) or attempt == 2:
+                return result
+            time.sleep(attempt + 1)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(fetch, definitions))
+        results = list(pool.map(fetch_with_retry, definitions))
     for source, rows, error in results:
         print(source['id'] + ': ' + ('FAILED ' + error if error else str(len(rows)) + ' items'))
     failed = {s['id']: e for s, _, e in results if e}
