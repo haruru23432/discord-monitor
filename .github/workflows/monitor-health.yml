@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '11 * * * *'
   workflow_dispatch:
+    inputs:
+      test_mention:
+        description: "Send one labeled mention test without changing monitor state"
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -23,6 +28,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
+          TEST_MENTION: ${{ inputs.test_mention || false }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         shell: python
         run: |
@@ -77,9 +84,23 @@ jobs:
               api = os.environ["GITHUB_API_URL"] + "/repos/" + os.environ["GITHUB_REPOSITORY"]
               headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"}
               webhook = os.environ["DISCORD_WEBHOOK_URL"].strip()
+              user = os.environ["DISCORD_MENTION_USER_ID"].strip()
+              if not re.fullmatch(r"[0-9]{17,20}", user):
+                  raise RuntimeError("Mention User ID is missing or invalid")
               p = urllib.parse.urlsplit(webhook)
               if p.scheme != "https" or p.netloc not in ("discord.com", "discordapp.com") or not re.fullmatch(r"/api/webhooks/[^/]+/[^/]+", p.path) or p.query or p.fragment:
                   raise RuntimeError("Monitor Webhook Secret is missing or invalid")
+
+              def send_notice(chunk):
+                  result = request(urllib.parse.urlunsplit(p._replace(query="wait=true")),
+                      {"content": "<@" + user + ">\n" + chunk, "allowed_mentions": {"parse": [], "users": [user]}})
+                  if not result.get("id") or not any(str(u.get("id")) == user for u in result.get("mentions", [])):
+                      raise RuntimeError("Discord mention receipt unconfirmed; check channel before retrying")
+
+              if os.environ.get("TEST_MENTION", "false").lower() == "true":
+                  send_notice("【接続テスト】監視状態通知の本人メンション確認です。定期監視の状態は変更していません。")
+                  print("Mention test receipt confirmed.")
+                  return
 
               def gh(path, data=None, method=None):
                   return request(api + path, data, headers, method)
@@ -160,10 +181,7 @@ jobs:
                       chunks.append(labels[change] + "\n" + name + "\n" + link)
                   # Each chunk fits Discord's message limit; no exception text or secrets sent.
                   for chunk in chunks:
-                      result = request(urllib.parse.urlunsplit(p._replace(query="wait=true")),
-                          {"content": chunk, "allowed_mentions": {"parse": []}})
-                      if not result.get("id"):
-                          raise RuntimeError("Discord receipt unconfirmed; check channel before retrying")
+                      send_notice(chunk)
                   state["delivery"] = "confirmed"
                   save()
               elif now - state["checked"] >= 7 * 86400 or sha is None or original_records != json.dumps(state["workflows"], sort_keys=True):
