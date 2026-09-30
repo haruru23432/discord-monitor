@@ -76,7 +76,7 @@ jobs:
               if current == "waiting":
                   return None
               if current == "ok":
-                  return "recovered" if old in ("failed", "stale", "disabled") else None
+                  return "recovered" if old in ("failed", "stale", "disabled", "unavailable") else None
               return current if old != current else None
 
 
@@ -180,17 +180,33 @@ jobs:
                       record["status"] = current
                   elif current == "ok":
                       record["status"] = "ok"
+              # Independent probe: this Actions job runs outside Cloudflare and the PC.
+              cloud_key = "cloud-notification-service"
+              cloud_record = state["workflows"].setdefault(cloud_key, {"started": now, "status": "ok"})
+              try:
+                  probe = request("https://haru-work-notifications.haruru23432.workers.dev/healthz")
+                  cloud_status = "ok" if probe == {"ok": True} else "unavailable"
+              except (urllib.error.URLError, TimeoutError, ValueError):
+                  cloud_status = "unavailable"
+              cloud_change = transition(cloud_record["status"], cloud_status)
+              cloud_record["status"] = cloud_status
+              cloud_record["evidence"] = {"checked_at": now, "result": cloud_status}
+              print(json.dumps({"component": cloud_key, **cloud_record["evidence"]}, sort_keys=True))
+              if cloud_change:
+                  changes.append(({"name": "Work通知基盤（対象Work自体の停止・完了を意味しません）", "id": cloud_key,
+                      "url": "https://haru-work-notifications.haruru23432.workers.dev/healthz"}, cloud_change))
               if changes:
                   # Reserve transitions before sending; uncertain sends must not spam retries.
                   state["delivery"] = "unconfirmed"
                   state["checked"] = now
                   save()
                   labels = {"failed": "⚠️ 定期監視が2回連続で失敗しました", "stale": "⚠️ 26時間以上、定期監視の完了を確認できません",
+                      "unavailable": "⚠️ クラウド通知基盤の稼働を確認できません",
                       "disabled": "⚠️ 定期監視が無効になっています", "recovered": "✅ 定期監視が復旧しました"}
                   chunks = []
                   for workflow, change in changes:
                       name = workflow["name"][:150]
-                      link = os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/workflows/" + str(workflow["id"])
+                      link = workflow.get("url") or os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/workflows/" + str(workflow["id"])
                       chunks.append(labels[change] + "\n" + name + "\n" + link)
                   # Each chunk fits Discord's message limit; no exception text or secrets sent.
                   for chunk in chunks:
