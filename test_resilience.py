@@ -1,11 +1,18 @@
 """Failure-path regressions found by the independent operational audit."""
 import unittest
+import os
 from unittest.mock import patch, Mock
 import monitor as m
 from test_monitor import state, item, NOW
 
 
 class ResilienceTests(unittest.TestCase):
+    def setUp(self):
+        # Fault-injection summaries must never reach the live Actions summary.
+        environment = patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': '', 'TEST_NOTIFICATION': 'false'})
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_partial_article_failure_preserves_other_articles_and_reports_error(self):
         index = '<a href="https://overwatch.blizzard.com/en-us/news/2/new">new</a><a href="https://overwatch.blizzard.com/en-us/news/3/broken">broken</a>'
         good = dict(item(), language='ja')
