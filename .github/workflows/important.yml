@@ -22,6 +22,7 @@ permissions:
 concurrency:
   group: discord-monitor-delivery
   cancel-in-progress: false
+  queue: max
 
 jobs:
   monitor:

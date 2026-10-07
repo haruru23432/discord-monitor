@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 
 from html.parser import HTMLParser
 
+from monitor_sources import FetchRows, fetch_error
+
 class PatchParser(HTMLParser):
     """Read the patch containers and stable date anchors on Blizzard's page."""
     def __init__(self):
@@ -71,8 +73,18 @@ class PatchParser(HTMLParser):
                 self.current = None
 
 def fetch_patches(since):
+    items = {}
+    try:
+        return FetchRows(_fetch_patches(since, items))
+    except Exception as error:
+        if not items:
+            raise
+        return FetchRows(items.values(), {'archive': fetch_error(error)})
+
+
+def _fetch_patches(since, items):
     url = PATCH_URL
-    visited, items = set(), {}
+    visited = set()
     for _ in range(12):
         if url in visited:
             raise RuntimeError("Blizzard archive pagination did not advance")

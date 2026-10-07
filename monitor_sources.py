@@ -38,6 +38,17 @@ SOURCES = [
      for topic, appid in GAMES.items() for feed in ('steam_community_announcements', 'pcgamer')]
 
 
+class FetchRows(list):
+    """Usable public articles plus observable partial collection failures."""
+    def __init__(self, rows=(), errors=None):
+        super().__init__(rows)
+        self.errors = dict(errors or {})
+
+
+def fetch_error(error):
+    return type(error).__name__ + (':' + str(error.code) if isinstance(error, urllib.error.HTTPError) else '')
+
+
 def clean(text):
     return re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>|\[[^\]]+\]', ' ', text))).strip()
 
@@ -148,38 +159,121 @@ def parse_medal(raw, source):
 def fetch_source(source, now):
     raw = request(source['url'])
     if source['kind'] == 'rss':
-        rows = parse_rss(raw, source)
+        rows = FetchRows(parse_rss(raw, source))
         if source['id'] == 'discord-official':
-            for row in rows:
+            for row in list(rows):
                 if row['date'] >= now - 14 * DAY or row['url'] in RECOVER_URLS:
-                    row['body'] = discord_body(request(row['url']))
+                    try:
+                        row['body'] = discord_body(request(row['url']))
+                    except Exception as error:
+                        rows.errors[row['url']] = fetch_error(error)
+                        rows.remove(row)
         return rows
     if source['kind'] == 'medal':
-        result = parse_medal(raw, source)
-        logs = sorted({r['url'] for r in result if 'changelog' in r['url']}, reverse=True)[:1]
-        for url in logs:
-            result.extend(parse_changelog(request(url), source, url))
+        cards = {row['url']: row for row in parse_medal(raw, source)}
+        logs = sorted(url for url in cards if 'changelog' in url)[-1:]
+        result = FetchRows()
+        for url, row in cards.items():
+            if 'changelog' in url and url not in logs:
+                continue
+            try:
+                page = request(url)
+                if url in logs:
+                    result.extend(parse_changelog(page, source, url))
+                else:
+                    date, body = medal_article(page)
+                    result.append(dict(row, date=date, body=body))
+            except Exception as error:
+                result.errors[url] = fetch_error(error)
         return result
-    result, end = [], now + 1
+    result, end = FetchRows(), now + 1
     for page in range(10):
-        if page:
-            raw = request(source['url'] + '&enddate=' + str(end))
-        obj = json.loads(raw)['appnews']
-        if int(obj['appid']) != GAMES[source['topic']]:
-            raise ValueError('Wrong Steam app')
-        rows = obj['newsitems']
-        for row in rows:
-            if row['feedname'] == source['feed']:
-                result.append(article(source, row['title'], row['url'], row.get('contents', ''), int(row['date']), row['gid']))
-        if len(rows) < 100 or min(int(r['date']) for r in rows) < now - 14 * DAY:
+        try:
+            if page:
+                raw = request(source['url'] + '&enddate=' + str(end))
+            obj = json.loads(raw)['appnews']
+            if int(obj['appid']) != GAMES[source['topic']]:
+                raise ValueError('Wrong Steam app')
+            rows = obj['newsitems']
+            if not isinstance(rows, list):
+                raise ValueError('Invalid Steam newsitems schema')
+        except Exception as error:
+            if not result:
+                raise
+            result.errors['page-' + str(page)] = fetch_error(error)
+            return result
+        cursor_dates = []
+        for index, row in enumerate(rows):
+            try:
+                if not isinstance(row, dict) or not row.get('feedname'):
+                    raise ValueError('Invalid Steam article schema')
+                # Pagination considers every returned feed, not just the selected
+                # feed. Validate its cursor date before accepting this page.
+                cursor_dates.append(int(row['date']))
+                if row['feedname'] == source['feed']:
+                    if not all(row.get(key) for key in ('title', 'url', 'date', 'gid')):
+                        raise ValueError('Steam article field missing')
+                    result.append(article(source, row['title'], row['url'], row.get('contents', ''), int(row['date']), row['gid']))
+            except Exception as error:
+                result.errors['page-' + str(page) + '-row-' + str(index)] = fetch_error(error)
+        if result.errors:
+            # An invalid date cannot safely advance the archive cursor. Preserve
+            # valid rows and make the incomplete page visible for the next run.
+            return result
+        if len(rows) < 100 or min(cursor_dates) < now - 14 * DAY:
             if not result and source['official']:
                 raise ValueError('Empty official Steam feed')
             return result
-        next_end = min(int(r['date']) for r in rows) - 1
+        next_end = min(cursor_dates) - 1
         if next_end >= end:
             raise ValueError('Steam pagination did not advance')
         end = next_end
     raise ValueError('Steam backlog exceeds safe limit')
+
+
+def medal_article(raw):
+    """Read the article's own published date, never a date from related cards."""
+    class Article(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.dates, self.display_dates, self.body = [], [], []
+            self.info_depth = self.body_depth = 0
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == 'meta' and a.get('property', a.get('name')) in ('article:published_time', 'datePublished'):
+                self.dates.append(a.get('content', ''))
+            if tag == 'div':
+                classes = a.get('class', '').split()
+                if self.info_depth: self.info_depth += 1
+                elif 'post-info' in classes: self.info_depth = 1
+                if self.body_depth: self.body_depth += 1
+                elif 'post_rich-text' in classes: self.body_depth = 1
+        def handle_endtag(self, tag):
+            if tag == 'div':
+                self.info_depth = max(0, self.info_depth - 1)
+                self.body_depth = max(0, self.body_depth - 1)
+            if self.body_depth and tag in ('p', 'li', 'h1', 'h2', 'h3'):
+                self.body.append('\n')
+        def handle_data(self, text):
+            if self.info_depth: self.display_dates.append(text.strip())
+            if self.body_depth: self.body.append(text)
+    parsed = Article()
+    parsed.feed(raw)
+    dates = list(parsed.dates)
+    # JSON-LD publication metadata is an alternative to Webflow's post-info date.
+    dates.extend(re.findall(r'"datePublished"\s*:\s*"([^"]+)"', raw))
+    for value in dates + parsed.display_dates:
+        for fmt in (None, '%b %d, %Y', '%B %d, %Y'):
+            try:
+                day = datetime.fromisoformat(value.replace('Z', '+00:00')) if fmt is None else datetime.strptime(value, fmt)
+                day = day if day.tzinfo else day.replace(tzinfo=timezone.utc)
+                body = '\n'.join(parsed.body).strip()
+                if not body:
+                    raise ValueError('Medal article body missing')
+                return int(day.timestamp()), body
+            except (ValueError, TypeError):
+                continue
+    raise ValueError('Medal article publication date or body missing')
 
 
 def parse_changelog(raw, source, url):

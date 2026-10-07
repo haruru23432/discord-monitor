@@ -22,10 +22,23 @@ import urllib.request
 
 from datetime import datetime, timezone
 
+from monitor_sources import FetchRows, fetch_error
+
 def fetch_bhvr(since):
+    result = FetchRows()
+    try:
+        return _fetch_bhvr(since, result)
+    except Exception as error:
+        if not result:
+            raise
+        result.errors['archive'] = fetch_error(error)
+        return result
+
+
+def _fetch_bhvr(since, result):
     # Public, unauthenticated Vanilla API; follow its pagination metadata.
     url = "https://forums.bhvr.com/api/v2/articles?limit=100"
-    result, visited = [], set()
+    visited = set()
     for _ in range(15):
         p = urllib.parse.urlsplit(url)
         if p.scheme != "https" or p.netloc != "forums.bhvr.com" or p.path != "/api/v2/articles" or url in visited:
@@ -46,17 +59,21 @@ def fetch_bhvr(since):
             contents = ""
             if published >= since:
                 endpoint = "https://forums.bhvr.com/api/v2/articles/" + str(int(row["articleID"]))
-                with urllib.request.urlopen(urllib.request.Request(endpoint, headers={"User-Agent": UA}), timeout=30) as response:
-                    details = json.load(response)
-                contents = details.get("body", "")
-                if not contents:
-                    raise RuntimeError("BHVR article body missing")
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(endpoint, headers={"User-Agent": UA}), timeout=30) as response:
+                        details = json.load(response)
+                    contents = details.get("body", "")
+                    if not contents:
+                        raise RuntimeError("BHVR article body missing")
+                except Exception as error:
+                    result.errors[article_url] = fetch_error(error)
+                    continue
             item = dict(gid="bhvr:" + str(row["articleID"]), title=row["name"],
                 url=article_url, date=published, contents=contents, feedname=BHVR)
             if patch_channel(item) and published <= int(time.time()):
                 result.append(item)
         if not next_url:
-            if not result:
+            if not result and not result.errors:
                 raise RuntimeError("BHVR patch notes are empty")
             return result
         url = urllib.parse.urljoin(url, next_url)

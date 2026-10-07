@@ -144,7 +144,7 @@ def localize(item):
         return item
     if item.get('language') == 'ja' or item['topic'] not in sources.GAMES:
         return item
-    urls = [item['url']] + re.findall(r'https?://[^\s<>"\'\]\)]+', html.unescape(item['body']))
+    urls = list(dict.fromkeys([item['url']] + re.findall(r'https?://[^\s<>"\'\]\)]+', html.unescape(item['body']))))
     # Only verified official article links; never replace with an unverified URL.
     for url in urls[:40]:
         if not news_url(url, item['topic']):
@@ -153,6 +153,13 @@ def localize(item):
         if not candidate:
             continue
         try:
+            if url != item['url']:
+                # A related link is not evidence that this is a translation.
+                # Verify the publisher's original headline before adopting its locale.
+                original, _ = article_page(url, item['topic'])
+                normalize = lambda title: re.sub(r'[^\w]', '', html.unescape(title).casefold())
+                if normalize(original['title']) != normalize(item['title']):
+                    continue
             localized, _ = article_page(candidate, item['topic'], item)
             same_date = not localized['date'] or not item['date'] or abs(localized['date'] - item['date']) <= 2 * DAY
             if localized['language'] == 'ja' and same_date:
@@ -162,7 +169,6 @@ def localize(item):
                 return localized
         except Exception:
             pass
-        break
     return item
 
 
@@ -172,16 +178,24 @@ def fetch_news(topic, now):
         nodes = data['result']['pageContext']['postsData']['articles']['edges']
         if not nodes:
             raise ValueError('DbD official index empty')
-        rows = []
+        rows = sources.FetchRows()
         for entry in nodes:
             row = entry['node']
             date = stamp(row['published_at'])
-            if row['locale'] != 'ja' or date is None or date < now - 14 * DAY:
+            if row['locale'] != 'ja':
                 continue
             url = 'https://deadbydaylight.com/ja/news/' + row['slug'] + '/'
-            item, _ = article_page(url, topic)
-            item['date'] = date
-            rows.append(item)
+            if date is None:
+                rows.errors[url] = 'PublicationDateMissing'
+                continue
+            if date < now - 14 * DAY:
+                continue
+            try:
+                item, _ = article_page(url, topic)
+                item['date'] = date
+                rows.append(item)
+            except Exception as exc:
+                rows.errors[url] = type(exc).__name__
         return rows
     # Localized indexes can lag the English publication by weeks. Discover both,
     # then prefer a verified Japanese article without discarding the original.
@@ -203,11 +217,21 @@ def fetch_news(topic, now):
     for error in index_errors:
         print('::warning::' + topic + ' official index fetch failure: ' + error)
     urls = list(dict.fromkeys(urls))
-    rows, failed, identities = [], 0, set()
+    rows, failed, identities = sources.FetchRows(), 0, set()
+    rows.errors.update({str(n): error for n, error in enumerate(index_errors)})
     for url in urls:
         try:
-            item, _ = article_page(url, topic)
+            try:
+                item, _ = article_page(url, topic)
+            except urllib.error.HTTPError as exc:
+                # Blizzard lists locale-exclusive stories on other locale indexes.
+                # Resolve the same article ID, never a different related article.
+                alternate = japanese_url(url) if topic == 'ow' else None
+                if exc.code != 404 or not alternate or alternate == url:
+                    raise
+                item, _ = article_page(alternate, topic)
             if item['date'] is None:
+                print('::warning::' + topic + ' article publication date missing: ' + url)
                 raise ValueError('Article publication date missing')
             if item['date'] < now - 14 * DAY:
                 continue
@@ -221,7 +245,8 @@ def fetch_news(topic, now):
                 rows.append(item)
         except Exception as exc:
             failed += 1
-            print('::warning::' + topic + ' official article failed: ' + url + ' (' + type(exc).__name__ + ': ' + str(exc) + ')')
+            rows.errors[url] = type(exc).__name__ + (':' + str(exc.code) if isinstance(exc, urllib.error.HTTPError) else '')
+            print('::warning::' + topic + ' official article failed: ' + url + ' (' + rows.errors[url] + ')')
     if failed == len(urls):
         raise ValueError('Official articles unavailable')
     if failed:
@@ -321,11 +346,18 @@ def classify(item):
 
 def keys(item):
     # Article identities use their own URL; referenced historical articles cannot suppress new news.
-    result = {'gid:' + item['gid'], 'title:' + sources.digest(re.sub(r'\W+', '', sources.clean(item['title']).casefold()))}
+    result = {'gid:' + item['gid']}
+    # Repeated editorial headings are not permanent article identities. Keep
+    # headline fallback within its publication day; stable IDs remain timeless.
+    if item.get('date'):
+        published_day = datetime.fromtimestamp(item['date'], timezone.utc).strftime('%Y-%m-%d')
+        result.add('title-date:' + published_day + ':' + sources.digest(re.sub(r'\W+', '', sources.clean(item['title']).casefold())))
     # Verified mirrors with different headlines and no canonical link in Steam text.
     # Exact article IDs only: never merge unrelated updates merely by season/version.
     if item['topic'] == 'ow' and item['official'] and item['gid'] == '1845383656397269':
         result.add('official:24303008')
+    if item['topic'] == 'apex' and item['official'] and item['gid'] == '1844751498222163':
+        result.add('official:javelin-anticheat-announcement')
     url = sources.canonical(item['url'])
     p = urllib.parse.urlsplit(url)
     path = re.sub(r'^/(?:en-us|en|ja-jp|ja)(?=/)', '', p.path)
@@ -350,8 +382,8 @@ def keys(item):
         candidate = re.sub(r'apex[\s-]+legends|dead[\s-]+by[\s-]+daylight|overwatch|\bvs\b', '', candidate, flags=re.I)
         words = re.findall(r'[a-z0-9]+', candidate.lower())
         if len(words) >= 3 and not re.search(r'[ぁ-んァ-ヶ一-龯]', candidate):
-            year = datetime.fromtimestamp(item['date'], timezone.utc).year
-            result.add('headline-slug:' + str(year) + ':' + '-'.join(words))
+            day = datetime.fromtimestamp(item['date'], timezone.utc).strftime('%Y-%m-%d')
+            result.add('headline-slug:' + day + ':' + '-'.join(words))
     if host == 'steamcommunity.com':
         match = re.search(r'/(?:announcements/detail|detail)/(\d+)', path)
         if match:
@@ -366,7 +398,9 @@ def keys(item):
     developer_title = re.search(r'dev(?:eloper)? update|開発|PTB to Live', item['title'], re.I)
     if item['topic'] == 'dbd' and version and patch_title and not developer_title:
         result.add('patch-version:' + ('PTB' if 'ptb' in item['title'].lower() else '通常サーバー') + ':' + version[0])
-    result.update(item.get('original_keys', []))
+    # Old queued/localized records may carry the retired permanent aliases.
+    result.update(k for k in item.get('original_keys', [])
+                  if not k.startswith('title:') and not re.match(r'^headline-slug:\d{4}:', k))
     return result
 
 
@@ -451,6 +485,11 @@ def repair_dbd_aliases(state):
     for gid, title, url in records:
         record = dict(topic='dbd', gid=gid, title=title, url=url, official=True, date=1791297165)
         remove.update(scoped_keys(record))
+        # This historical repair targets the old alias format, independently of
+        # the current date-scoped identity policy.
+        remove.add('dbd:title:' + sources.digest(re.sub(r'\W+', '', sources.clean(title).casefold())))
+        remove.update(re.sub(r'^(dbd:headline-slug:\d{4})-\d{2}-\d{2}:', r'\1:', key)
+                      for key in scoped_keys(record) if key.startswith('dbd:headline-slug:'))
     # The PTB patch was actually delivered before migration; never remove its alias.
     remove.discard('dbd:patch-version:PTB:10.2.0')
     remove.difference_update(protected)
@@ -570,6 +609,23 @@ def payload(item, user):
             'embeds': [{'title': (item.get('title_ja') or sources.japanese_title(item))[:256], 'url': item['url'], 'description': description[:4000], 'color': 3447003}]}
 
 
+class DeliveryPersistenceError(RuntimeError):
+    """Stop this run after a state write fails; its remote outcome may be unknown."""
+
+
+def delivery_save(state, save, phase, receipt=None):
+    try:
+        save(state)
+    except Exception as error:
+        # A confirmed message ID is recovery evidence, never a reason to POST again.
+        evidence = {'phase': phase, 'error': type(error).__name__}
+        if receipt:
+            evidence['confirmed_receipt'] = receipt
+        print('::error::Delivery state write failed; stop without further writes: ' +
+              json.dumps(evidence, ensure_ascii=False))
+        raise DeliveryPersistenceError('Delivery state write failed: ' + phase) from error
+
+
 def deliver(state, identity, item, save, send, user, now):
     route = CHANNELS[item['topic']]
     if route in state['pending'] or scoped_keys(item) & set(state['sent']):
@@ -577,23 +633,39 @@ def deliver(state, identity, item, save, send, user, now):
     data = payload(item, user)  # Translation failures happen before a delivery reservation.
     record = {'at': now, 'keys': sorted(scoped_keys(item)), 'queue_id': identity, 'topic': item['topic'], 'url': item['url']}
     state['pending'][route] = record
-    save(state)
+    try:
+        delivery_save(state, save, 'reservation')
+    except DeliveryPersistenceError:
+        # No POST has been attempted. Do not leak a local-only reservation into
+        # an unrelated channel's later save. The caller must stop on this error.
+        del state['pending'][route]
+        raise
     try:
         response = send(item['topic'], data)
     except urllib.error.HTTPError as error:
         # Explicit rejections are safe to retry; a 5xx or broken connection is ambiguous.
         if error.code in (400, 401, 403, 404, 405, 413, 429):
             del state['pending'][route]
-            save(state)
+            try:
+                delivery_save(state, save, 'explicit-rejection')
+            except DeliveryPersistenceError:
+                state['pending'][route] = record
+                raise
         raise
     if not isinstance(response, dict) or not response.get('id'):
         raise ValueError('Discord receipt missing; pending retained')
-    state['sent'] = sorted(set(state['sent']) | set(record['keys']))
-    state['receipts'].append({'id': response['id'], 'channel': route, 'at': now,
-                              'keys': record['keys'], 'mention_confirmed': any(u.get('id') == user for u in response.get('mentions', []))})
-    del state['pending'][route]
-    state['queue'].pop(identity, None)
-    save(state)
+    receipt = {'id': response['id'], 'channel': route, 'at': now,
+               'keys': record['keys'], 'mention_confirmed': any(u.get('id') == user for u in response.get('mentions', []))}
+    # Persist a candidate copy: if the write fails, retain the last known durable
+    # pending state in memory and emit the received Discord ID for reconciliation.
+    confirmed = copy.deepcopy(state)
+    confirmed['sent'] = sorted(set(confirmed['sent']) | set(record['keys']))
+    confirmed['receipts'].append(receipt)
+    del confirmed['pending'][route]
+    confirmed['queue'].pop(identity, None)
+    delivery_save(confirmed, save, 'receipt', receipt)
+    state.clear()
+    state.update(confirmed)
     return True
 
 
@@ -621,10 +693,12 @@ def collect(topics, now, metrics=None):
                 else:
                     import monitor_dbd_source
                     data = monitor_dbd_source.fetch_bhvr(now - 14 * DAY)
-                rows = [sources.article(source, r['title'], r['url'], r['contents'], r['date'], r['gid']) for r in data]
+                rows = sources.FetchRows([sources.article(source, r['title'], r['url'], r['contents'], r['date'], r['gid']) for r in data])
+                rows.errors.update(getattr(data, 'errors', {}))
             else:
                 rows = sources.fetch_source(source, now)
-            return source, rows, None
+            partial = getattr(rows, 'errors', {})
+            return source, rows, ('PartialFetch:' + json.dumps(partial, ensure_ascii=False) if partial else None)
         except Exception as error:
             return source, [], type(error).__name__ + (':' + str(error.code) if isinstance(error, urllib.error.HTTPError) else '')
     def fetch_with_retry(source):
@@ -648,6 +722,37 @@ def collect(topics, now, metrics=None):
         if 'windows' not in unavailable:
             unavailable.append('windows')
     return [r for _, rows, _ in results for r in rows], failed, unavailable
+
+
+def validate_state(state):
+    """Reject malformed delivery history before any Discord request or state write."""
+    def strings(value):
+        return isinstance(value, list) and all(isinstance(k, str) and k for k in value)
+    if not isinstance(state, dict) or state.get('version') != 2:
+        raise ValueError('Invalid shared state version; refusing reset')
+    if not all(isinstance(state.get(k), dict) for k in ('seen', 'pending', 'queue', 'checked', 'source_failures')):
+        raise ValueError('Invalid shared state mappings; refusing reset')
+    if not strings(state.get('sent')) or not isinstance(state.get('receipts'), list):
+        raise ValueError('Invalid delivery history; refusing reset')
+    for receipt in state['receipts']:
+        if not isinstance(receipt, dict) or not receipt.get('id') or not strings(receipt.get('keys')):
+            raise ValueError('Invalid delivery receipt; refusing reset')
+        if not set(receipt['keys']) <= set(state['sent']):
+            raise ValueError('Confirmed receipt missing from sent history; refusing reset')
+    for route, pending in state['pending'].items():
+        if (route not in set(CHANNELS.values()) or not isinstance(pending, dict)
+                or not strings(pending.get('keys')) or not pending.get('keys')
+                or not isinstance(pending.get('queue_id'), str)
+                or pending.get('topic') not in CHANNELS
+                or CHANNELS[pending['topic']] != route):
+            raise ValueError('Invalid pending delivery; refusing reset')
+    for identity, queued in state['queue'].items():
+        if (not isinstance(identity, str) or not isinstance(queued, dict)
+                or queued.get('topic') not in CHANNELS
+                or not all(isinstance(queued.get(k), str) for k in ('gid', 'title', 'url', 'body', 'source'))
+                or not isinstance(queued.get('official'), bool)
+                or (queued.get('date') is not None and not isinstance(queued['date'], (int, float)))):
+            raise ValueError('Invalid queued article; refusing reset')
 
 
 class Store:
@@ -685,8 +790,7 @@ class Store:
                     raise ValueError('Legacy monitor changed during migration')
             windows, _ = self.read('.monitor/windows-state.json', os.environ['DEFAULT_BRANCH'])
             state = migrate(old, games, baselines, windows, now)
-        if state.get('version') != 2 or not all(isinstance(state.get(k), dict) for k in ('seen', 'pending', 'queue')) or not isinstance(state.get('sent'), list):
-            raise ValueError('Invalid shared state; refusing reset')
+        validate_state(state)
         return state
 
     def save(self, state):
@@ -722,7 +826,7 @@ def main():
     items, failures, unavailable = collect(topics, now, metrics)
     if '--check-sources' in sys.argv:
         print(json.dumps({'failures': failures, 'unavailable': unavailable, 'important': [{'topic': i['topic'], 'title': i['title'], 'url': i['url']} for i in items if i['date'] and i['date'] >= now - 14 * DAY and classify(i)]}, ensure_ascii=False))
-        return bool(unavailable)
+        return bool(unavailable or failures)
     store = Store()
     state = store.load(now)
     days = 14 if os.environ.get('RECOVERY_DAYS') == '14' else 7
@@ -738,6 +842,8 @@ def main():
             webhook(item['topic'])  # Configuration failures must not create ambiguous pending delivery.
             item = localize(item)
             if scoped_keys(item) & set(state['sent']):
+                # Keep verified original mirror IDs so a later locale outage cannot resend them.
+                state['sent'] = sorted(set(state['sent']) | scoped_keys(item))
                 state['queue'].pop(identity)
                 store.save(state)
                 continue
@@ -746,10 +852,15 @@ def main():
                        os.environ.get('DISCORD_MENTION_USER_ID', ''), now):
                 delivered += 1
                 source_metrics(metrics, item['source'])['delivered'] += 1
+        except DeliveryPersistenceError:
+            raise  # Do not save another route using an uncertain/stale GitHub snapshot.
         except Exception as error:
             errors.append(item['topic'] + ':' + type(error).__name__)
             print('::warning::Delivery retained for inspection/retry: ' + errors[-1])
+    mention_issues = [r['id'] for r in state['receipts'] if r.get('mention_confirmed') is False]
     summary = f'Monitor {mode}: delivered={delivered}, queued={len(state["queue"])}, pending={len(state["pending"])}.\n'
+    if mention_issues:
+        summary += 'Mention receipt requires inspection (no automatic resend): ' + ', '.join(mention_issues) + '\n'
     summary += 'Source failures: ' + json.dumps(failures) + '\nUnavailable topics: ' + ', '.join(unavailable) + '\n'
     summary += '\n| Source | fetched | new | important | duplicate | already_sent | outside_window | missing_date | unimportant | queued | delivered | error |\n'
     summary += '|---|' + '---|' * 11 + '\n'
@@ -761,7 +872,7 @@ def main():
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
             handle.write(summary)
-    return bool(unavailable or errors or state['pending'])
+    return bool(unavailable or failures or errors or state['pending'] or mention_issues)
 
 
 if __name__ == '__main__':
