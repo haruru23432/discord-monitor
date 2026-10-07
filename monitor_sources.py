@@ -329,11 +329,14 @@ def brief_summary(item, label):
     # Extract source wording instead of inventing details or translating numbers.
     body = re.sub(r'<(?:script|style)\b[^>]*>.*?</(?:script|style)>', '', item['body'], flags=re.S | re.I)
     blocks = re.split(r'</(?:p|li|h[1-6])>|(?<=[.!?])\s+|(?<=。)|\n\s*\n', body)
-    cues = r'new|introduc|launch|releas|chang|updat|increas|reduc|support|crash|outage|rework|event|追加|変更|不具合|開催'
+    cues = r'new|introduc|launch|releas|chang|updat|increas|reduc|support|crash|outage|rework|event|追加|変更|不具合|開催|切り替|移行|アンチチート'
     eligible = [clean(block) for block in blocks
                 if 25 <= len(clean(block)) <= 600 and re.search(cues + '|ヒーロー|レジェンド|シーズン|新マップ|開始|開幕|影響', clean(block), re.I)
-                and not re.search(r'subscribe|cookie|read more|privacy policy|最近の記事', clean(block), re.I)]
+                and not re.search(r'subscribe|cookie|read more|privacy policy|最近の記事', clean(block), re.I)
+                and not re.fullmatch(r'https?://\S+', clean(block))]
     priority = r'new (?:hero|killer|survivor|legend|map)|新(?:ヒーロー|キラー|レジェンド|サバイバー|マップ)' if '新キャラクター' in label else cues
+    if 'アンチチート' in label:
+        priority = r'(?:anti[ -]?cheat|アンチチート).{0,100}(?:switch|migrat|replac|切り替|移行)|(?:switch|migrat|replac).{0,100}anti[ -]?cheat'
     ranked = sorted(enumerate(eligible), key=lambda pair: (not bool(re.search(priority, pair[1], re.I)), pair[0]))
     excerpt = '\n'.join(text for _, text in ranked[:2])
     if not excerpt:
@@ -344,6 +347,21 @@ def brief_summary(item, label):
     return label + '\n原文の要点：' + excerpt
 
 
+
+
+def translate_japanese(text):
+    endpoint = 'https://api.mymemory.translated.net/get?' + urllib.parse.urlencode({'q': text, 'langpair': 'en|ja'})
+    result = json.loads(request(endpoint))
+    translated = html.unescape(result.get('responseData', {}).get('translatedText', '')).strip()
+    if str(result.get('responseStatus')) != '200' or result.get('quotaFinished') or not re.search(r'[ぁ-んァ-ヶ一-龯]', translated):
+        raise ValueError('Japanese translation unavailable; news remains unsent for next run')
+    return translated
+
+
+def japanese_title(item):
+    if re.search(r'[ぁ-んァ-ヶ一-龯]', item['title']):
+        return item['title']
+    return translate_japanese(item['title'][:250])
 
 
 def japanese_summary(item, label):
@@ -357,11 +375,7 @@ def japanese_summary(item, label):
     # Public news text only; no account IDs, webhook URLs, or credentials.
     while len(excerpt.encode('utf-8')) > 480:
         excerpt = excerpt[:-1]
-    endpoint = 'https://api.mymemory.translated.net/get?' + urllib.parse.urlencode({'q': excerpt, 'langpair': 'en|ja'})
-    result = json.loads(request(endpoint))
-    translated = html.unescape(result.get('responseData', {}).get('translatedText', '')).strip()
-    if str(result.get('responseStatus')) != '200' or result.get('quotaFinished') or not re.search(r'[ぁ-んァ-ヶ一-龯]', translated):
-        raise ValueError('Japanese translation unavailable; news remains unsent for next run')
+    translated = translate_japanese(excerpt)
     translated = re.sub(r'([\\`*_~|])', r'\\\1', translated)
     return label + '\n' + translated[:600] + '\n（自動翻訳）'
 

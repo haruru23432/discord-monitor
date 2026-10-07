@@ -189,9 +189,12 @@ class DeliveryTests(unittest.TestCase):
         self.saved=[]
         self.translation=patch.object(m.sources,'japanese_summary',return_value='新ヒーローが発表されました。')
         self.translation.start()
+        self.title_translation=patch.object(m.sources,'japanese_title',return_value='新ヒーロー発表')
+        self.title_translation.start()
 
     def tearDown(self):
         self.translation.stop()
+        self.title_translation.stop()
 
     def save(self,s):
         self.saved.append(copy.deepcopy(s))

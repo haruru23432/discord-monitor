@@ -118,6 +118,20 @@ def japanese_url(url):
 
 
 def localize(item):
+    if item['topic'] == 'ow' and item.get('source') == 'ow-patch':
+        import monitor_ow_source
+        candidate = japanese_url(item['url'])
+        try:
+            parser = monitor_ow_source.PatchParser()
+            parser.feed(sources.request(candidate))
+            anchor = urllib.parse.urlsplit(candidate).fragment
+            patch = next(p for p in parser.patches if p['anchor'] == anchor)
+            title, body = ' '.join(patch['title']), ' '.join(patch['text'])
+            if re.search(r'[ぁ-んァ-ヶ]', title + body):
+                return dict(item, title=title, body=body, url=candidate, language='ja', original_keys=sorted(keys(item)))
+        except Exception:
+            pass
+        return item
     if item.get('active_issue'):
         candidate = japanese_url(item['url'])
         try:
@@ -143,6 +157,8 @@ def localize(item):
             same_date = not localized['date'] or not item['date'] or abs(localized['date'] - item['date']) <= 2 * DAY
             if localized['language'] == 'ja' and same_date:
                 localized['recovered'] = item.get('recovered', False)
+                if 'label' in item:
+                    localized['label'] = item['label']
                 return localized
         except Exception:
             pass
@@ -167,20 +183,45 @@ def fetch_news(topic, now):
             item['date'] = date
             rows.append(item)
         return rows
-    page = Page(sources.request(NEWS[topic]))
-    urls = list(dict.fromkeys(urllib.parse.urljoin(NEWS[topic], u) for u in page.links
-                             if news_url(urllib.parse.urljoin(NEWS[topic], u), topic)))[:16]
-    urls = [japanese_url(u) or u for u in urls if '/news/game/' not in u]
+    # Localized indexes can lag the English publication by weeks. Discover both,
+    # then prefer a verified Japanese article without discarding the original.
+    english = (NEWS[topic].replace('/ja-jp/', '/en-us/') if topic == 'ow'
+               else NEWS[topic].replace('/ja/', '/'))
+    urls, index_errors = [], []
+    for index in (NEWS[topic], english):
+        try:
+            page = Page(sources.request(index))
+            found = list(dict.fromkeys(urllib.parse.urljoin(index, u) for u in page.links
+                         if news_url(urllib.parse.urljoin(index, u), topic)))[:32]
+            if not found:
+                raise ValueError('Official news index layout changed')
+            urls.extend(u for u in found if '/news/game/' not in u)
+        except Exception as exc:
+            index_errors.append(index + ': ' + type(exc).__name__)
     if not urls:
-        raise ValueError('Official news index layout changed')
-    rows, failed = [], 0
+        raise ValueError('Official news indexes unavailable: ' + '; '.join(index_errors))
+    for error in index_errors:
+        print('::warning::' + topic + ' official index fetch failure: ' + error)
+    urls = list(dict.fromkeys(urls))
+    rows, failed, identities = [], 0, set()
     for url in urls:
         try:
             item, _ = article_page(url, topic)
-            if item['date'] is not None and item['date'] >= now - 14 * DAY:
+            if item['date'] is None:
+                raise ValueError('Article publication date missing')
+            if item['date'] < now - 14 * DAY:
+                continue
+            if item['language'] != 'ja':
+                item = localize(item)
+            identity = re.sub(r'^/(?:ja-jp|en-us|ja)/', '/', urllib.parse.urlsplit(item['url']).path).rstrip('/')
+            if topic == 'ow':
+                identity = re.search(r'/news/(\d+)', identity)[1]
+            if identity not in identities:
+                identities.add(identity)
                 rows.append(item)
-        except Exception:
+        except Exception as exc:
             failed += 1
+            print('::warning::' + topic + ' official article failed: ' + url + ' (' + type(exc).__name__ + ': ' + str(exc) + ')')
     if failed == len(urls):
         raise ValueError('Official articles unavailable')
     if failed:
@@ -248,22 +289,30 @@ def classify(item):
     if re.search(r'\b(rumou?r|leak|speculation|sale|discount|giveaway|contest|esports|owcs|algs|tournament|merchandise)\b|セール|グッズ|大会結果|配信告知', title):
         return None
     text = title + '\n' + body
+    cosmetic_title = bool(re.search(r'skins?|cosmetic|outfits?|スキン|コーディネイト|コスメティック', title)
+                          or ('collection' in title and 'collection event' not in title))
+    cosmetic_category = bool(re.search(r'スキン[・と\s]*装飾アイテム|cosmetics?\s*(?:collection|category)', body[:1500]))
     # Concrete major changes in the full article also qualify under a generic title.
     patterns = [
-        ('新キャラクター・新マップ・新チャプター', r'\b(?:new|all-new) (?:hero|character|killer|survivor|legend|map|chapter)\b|新(?:ヒーロー|キャラクター|キラー|サバイバー|レジェンド|マップ|チャプター)|chapter reveal'),
+        ('新キャラクター・新マップ・新チャプター', r'\b(?:new|all-new) (?:(?:support|tank|damage|escort|control|hybrid|push|flashpoint) )?(?:hero|character|killer|survivor|legend|map|chapter)\b|新(?:サポート|タンク|ダメージ|エスコート)?(?:ヒーロー|キャラクター|キラー|サバイバー|レジェンド|マップ|チャプター)|chapter reveal'),
+        ('PC環境・アンチチートの重要変更', r'(?:anti[ -]?cheat|アンチチート).{0,100}(?:switch|migrat|replac|切り替|移行)|(?:switch|migrat|replac).{0,100}anti[ -]?cheat|(?:system requirements|システム要件|動作環境).{0,40}(?:chang|updat|変更|更新)'),
+        ('ヒーローのロール変更', r'(?:moves?|moving|switch\w*|chang\w*).{0,30}from (?:damage|tank|support) to (?:damage|tank|support)|(?:ダメージ|タンク|サポート).{0,12}から.{0,12}(?:ダメージ|タンク|サポート).{0,20}(?:変更|移行)'),
         ('コラボ', r'\bcollaboration\b|\bcrossover\b|\bcollab\b|コラボ'),
         ('新シーズン・大型アップデート', r'\bnew season\b|\bseason\s+\d+\b|\bmid[ -]?season\b|\bmid[ -]?chapter\b|major update|新シーズン|シーズン\s*\d+|大型アップデート|ミッドシーズン'),
         ('大規模なゲームプレイ・システム変更', r'(?:major|massive|complete).{0,40}(?:rework|overhaul|balance|gameplay)|(?:hero|legend|class|perk|ranked|matchmaking|system).{0,35}(?:rework|overhaul)|大規模|大幅.{0,15}(?:変更|調整)|リワーク'),
         ('主要期間限定イベント・モード', r'collection event|limited.time (?:event|mode)|new game mode|anniversary event|期間限定.{0,20}(?:イベント|モード)|コレクションイベント|新ゲームモード'),
     ]
     for label, pattern in patterns:
+        # A season number in skin promotion copy is not a season launch.
+        if label in ('コラボ', '新シーズン・大型アップデート', '主要期間限定イベント・モード') and (cosmetic_title or cosmetic_category):
+            continue
         for match in re.finditer(pattern, text, re.I):
             sentence = text[max(0, text.rfind('.', 0, match.start()) + 1):match.end() + 80]
             if not re.search(r'no new|not (?:a |adding )?new|last year|previous season|昨年|前シーズン', sentence):
                 return label
     if item['official'] and re.search(r'roadmap|developer update|director.s take|designer.?s? notes|ロードマップ|開発者アップデート|ディレクターの視点|デザイナーノート', title):
         return '開発チームの重要発表・今後の予定'
-    if item['official'] and re.search(r'\bevent\b|イベント', title) and not re.search(r'campaign|キャンペーン|配信|セール', title):
+    if item['official'] and re.search(r'\bevent\b|イベント', title) and not re.search(r'campaign|キャンペーン|配信|セール|skins?|cosmetic|outfits?|スキン|コーディネイト', title):
         return '主要期間限定イベント・モード'
     if item['topic'] == 'dbd' and re.search(r'\b\d+\.\d+\.0\b', title):
         return '大型アップデート' + ('（PTB）' if 'ptb' in title else '')
@@ -273,6 +322,10 @@ def classify(item):
 def keys(item):
     # Article identities use their own URL; referenced historical articles cannot suppress new news.
     result = {'gid:' + item['gid'], 'title:' + sources.digest(re.sub(r'\W+', '', sources.clean(item['title']).casefold()))}
+    # Verified mirrors with different headlines and no canonical link in Steam text.
+    # Exact article IDs only: never merge unrelated updates merely by season/version.
+    if item['topic'] == 'ow' and item['official'] and item['gid'] == '1845383656397269':
+        result.add('official:24303008')
     url = sources.canonical(item['url'])
     p = urllib.parse.urlsplit(url)
     path = re.sub(r'^/(?:en-us|en|ja-jp|ja)(?=/)', '', p.path)
@@ -309,7 +362,9 @@ def keys(item):
         day = datetime.fromtimestamp(item['date'], timezone.utc).strftime('%Y-%m-%d')
         result.add('patch-date:' + ('PTB' if 'ptb' in item['title'].lower() else '通常サーバー') + ':' + day)
     version = re.search(r'\b\d+\.\d+\.\d+\b', item['title'])
-    if item['topic'] == 'dbd' and version:
+    patch_title = re.search(r'patch notes|パッチノート|^\s*(?:\[?PTB\]?\s*)?\d+\.\d+\.\d+\b', item['title'], re.I)
+    developer_title = re.search(r'dev(?:eloper)? update|開発|PTB to Live', item['title'], re.I)
+    if item['topic'] == 'dbd' and version and patch_title and not developer_title:
         result.add('patch-version:' + ('PTB' if 'ptb' in item['title'].lower() else '通常サーバー') + ':' + version[0])
     result.update(item.get('original_keys', []))
     return result
@@ -373,12 +428,60 @@ def windows_duplicate(item, state):
     return any(aliases & set(i['keys']) for i in state.get('windows_legacy', []))
 
 
-def plan(state, items, now, days=7):
+def source_metrics(metrics, source):
+    return metrics.setdefault(source, dict(fetched=0, new=0, important=0, duplicate=0,
+        already_sent=0, outside_window=0, missing_date=0, unimportant=0, queued=0, delivered=0))
+
+
+def repair_dbd_aliases(state):
+    """Repair proven non-deliveries from 8041c0e/8b0a6e4, once, preserving receipts."""
+    marker = 'dbd_version_alias_20261007'
+    if marker in state.get('repairs', {}):
+        return
+    records = [
+        ('1845383656394283', 'Developer Update | 10.2.0 PTB to Live Changes',
+         'https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1845383656394283'),
+        ('1845383656396647', '10.2.0 | Mid-Chapter',
+         'https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/1845383656396647'),
+        ('bhvr:560', '10.2.0 | Mid-Chapter',
+         'https://forums.bhvr.com/dead-by-daylight/kb/articles/560-10-2-0-mid-chapter'),
+    ]
+    protected = {k for receipt in state.get('receipts', []) for k in receipt.get('keys', [])}
+    remove = {'dbd:patch-version:通常サーバー:10.2.0'}
+    for gid, title, url in records:
+        record = dict(topic='dbd', gid=gid, title=title, url=url, official=True, date=1791297165)
+        remove.update(scoped_keys(record))
+    # The PTB patch was actually delivered before migration; never remove its alias.
+    remove.discard('dbd:patch-version:PTB:10.2.0')
+    remove.difference_update(protected)
+    removed = sorted(set(state['sent']) & remove)
+    state['sent'] = sorted(set(state['sent']) - remove)
+    state.setdefault('repairs', {})[marker] = {'removed_unconfirmed_aliases': removed}
+
+
+def plan(state, items, now, days=7, metrics=None):
+    metrics = metrics if metrics is not None else {}
     state = copy.deepcopy(state)
+    repair_dbd_aliases(state)
+    # Re-evaluate unsent backlog against corrected policy; never clear uncertain sends.
+    current_items = {i['topic'] + ':' + sources.digest(i['gid']): i for i in items}
+    pending_ids = {p.get('queue_id') for p in state['pending'].values()}
+    for identity, queued in list(state['queue'].items()):
+        if identity in pending_ids:
+            continue
+        refreshed = current_items.get(identity, queued)
+        label = classify(refreshed)
+        if label is None:
+            del state['queue'][identity]
+            print('Queue re-evaluation: removed unimportant ' + refreshed['url'])
+        else:
+            state['queue'][identity] = dict(refreshed, label=label, recovered=True)
     selected_keys = set(state['sent'])
     # Recover cross-source incident aliases from already-confirmed articles still in feeds.
     for item in items:
-        if {item['topic'] + ':' + k for k in keys(item)} & selected_keys:
+        strong_keys = {item['topic'] + ':' + k for k in keys(item)
+                       if k.startswith(('gid:', 'url:', 'official:', 'steam:'))}
+        if strong_keys & selected_keys:
             selected_keys.update(scoped_keys(item))
     state['sent'] = sorted(selected_keys)
     for pending in state['pending'].values():
@@ -400,17 +503,30 @@ def plan(state, items, now, days=7):
     for item in sorted(grouped.values(), key=lambda i: (not i['official'], i.get('language') != 'ja', i['date'] or 0)):
         identity = item['topic'] + ':' + sources.digest(item['gid'])
         prior = identity in state['seen']
+        counts = source_metrics(metrics, item['source'])
+        counts['new'] += not prior
         state['seen'][identity] = now
         published = item['date']
         if not item.get('active_issue') and (published is None or not now - days * DAY <= published <= now):
+            counts['missing_date' if published is None else 'outside_window'] += 1
             continue
         label = classify(item)
         ks = scoped_keys(item)
-        if not label or ks & selected_keys or windows_duplicate(item, state):
+        if not label:
+            counts['unimportant'] += 1
+            print('Decision: ' + json.dumps(dict(source=item['source'], url=item['url'], result='unimportant'), ensure_ascii=False))
+            continue
+        counts['important'] += 1
+        if ks & set(state['sent']) or windows_duplicate(item, state):
+            counts['already_sent'] += 1
+            continue
+        if ks & selected_keys:
+            counts['duplicate'] += 1
             continue
         # A durable queue survives both rate limits and the seven-day discovery window.
         item = dict(item, recovered=prior, label=label)
         state['queue'][identity] = item
+        counts['queued'] += 1
         selected_keys.update(ks)
     return state
 
@@ -428,6 +544,8 @@ def payload(item, user):
         raise ValueError('DISCORD_MENTION_USER_ID is missing or invalid')
     summary = item.get('summary_ja') or sources.japanese_summary(item, item['label'])
     impacts = {'新キャラクター・新マップ・新チャプター': '利用できるキャラクターや遊べるコンテンツが変わります。',
+               'PC環境・アンチチートの重要変更': 'PC版の起動・不正対策や動作条件に関わる変更です。',
+               'ヒーローのロール変更': '編成や役割、これまでのプレイ方法が変わります。',
                'コラボ': '期間限定のコラボ内容と参加予定を確認する必要があります。',
                '新シーズン・大型アップデート': 'プレイ環境やシーズンの進行に関わる更新です。',
                '大規模なゲームプレイ・システム変更': 'これまでの戦術や設定、選択の見直しに関わる変更です。',
@@ -449,7 +567,7 @@ def payload(item, user):
     description += '\n\n**情報源**\n' + item['source'] + ('（公式）' if item['official'] else '（補助情報）') + '\n' + item['url']
     return {'content': '<@' + user + '> ' + sources.NAMES[item['topic']] + '｜重要情報',
             'allowed_mentions': {'parse': [], 'users': [user]},
-            'embeds': [{'title': item['title'][:256], 'url': item['url'], 'description': description[:4000], 'color': 3447003}]}
+            'embeds': [{'title': (item.get('title_ja') or sources.japanese_title(item))[:256], 'url': item['url'], 'description': description[:4000], 'color': 3447003}]}
 
 
 def deliver(state, identity, item, save, send, user, now):
@@ -479,7 +597,7 @@ def deliver(state, identity, item, save, send, user, now):
     return True
 
 
-def collect(topics, now):
+def collect(topics, now, metrics=None):
     definitions = [s for s in sources.SOURCES if s['topic'] in topics]
     if 'windows' in topics:
         definitions.append(dict(id='bleepingcomputer', topic='windows', kind='rss', official=False,
@@ -520,6 +638,10 @@ def collect(topics, now):
         results = list(pool.map(fetch_with_retry, definitions))
     for source, rows, error in results:
         print(source['id'] + ': ' + ('FAILED ' + error if error else str(len(rows)) + ' items'))
+        if metrics is not None:
+            counts = source_metrics(metrics, source['id'])
+            counts['fetched'] = len(rows)
+            counts['error'] = error or ''
     failed = {s['id']: e for s, _, e in results if e}
     unavailable = [t for t in topics if not any(s['topic'] == t and s['official'] and not e for s, _, e in results)]
     if 'windows' in topics and not any(s['id'].startswith('microsoft-') and not e for s, _, e in results):
@@ -596,14 +718,15 @@ def main():
                     os.environ.get('DISCORD_MENTION_USER_ID', ''), now)
         print('Connection checks completed; confirmed checks are not posted again.')
         return bool(state['pending'])
-    items, failures, unavailable = collect(topics, now)
+    metrics = {}
+    items, failures, unavailable = collect(topics, now, metrics)
     if '--check-sources' in sys.argv:
         print(json.dumps({'failures': failures, 'unavailable': unavailable, 'important': [{'topic': i['topic'], 'title': i['title'], 'url': i['url']} for i in items if i['date'] and i['date'] >= now - 14 * DAY and classify(i)]}, ensure_ascii=False))
         return bool(unavailable)
     store = Store()
     state = store.load(now)
     days = 14 if os.environ.get('RECOVERY_DAYS') == '14' else 7
-    state = plan(state, items, now, days)
+    state = plan(state, items, now, days, metrics)
     state['checked'][mode] = now
     state['source_failures'][mode] = failures
     store.save(state)
@@ -622,11 +745,18 @@ def main():
                        lambda topic, data: json.loads(sources.request(webhook(topic) + '?wait=true', data)),
                        os.environ.get('DISCORD_MENTION_USER_ID', ''), now):
                 delivered += 1
+                source_metrics(metrics, item['source'])['delivered'] += 1
         except Exception as error:
             errors.append(item['topic'] + ':' + type(error).__name__)
             print('::warning::Delivery retained for inspection/retry: ' + errors[-1])
     summary = f'Monitor {mode}: delivered={delivered}, queued={len(state["queue"])}, pending={len(state["pending"])}.\n'
     summary += 'Source failures: ' + json.dumps(failures) + '\nUnavailable topics: ' + ', '.join(unavailable) + '\n'
+    summary += '\n| Source | fetched | new | important | duplicate | already_sent | outside_window | missing_date | unimportant | queued | delivered | error |\n'
+    summary += '|---|' + '---|' * 11 + '\n'
+    for source, counts in sorted(metrics.items()):
+        summary += '| ' + source + ' | ' + ' | '.join(str(counts.get(k, '')) for k in
+            ('fetched', 'new', 'important', 'duplicate', 'already_sent', 'outside_window', 'missing_date', 'unimportant', 'queued', 'delivered', 'error')) + ' |\n'
+    summary += '\nnew=previously unseen; important includes sent/duplicate candidates; queued=new queue entries. Queue total above includes other topics.\n'
     print(summary)
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:

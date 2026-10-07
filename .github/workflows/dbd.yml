@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       recovery_days:
-        description: '再評価期間。通常7日、導入時のみ14日'
+        description: '再評価期間。通常7日、通知漏れ補完は14日'
         type: choice
         options: ['7', '14']
         default: '7'
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify delivery safety
-        run: python3 -m unittest -b -q test_monitor
+        run: python3 -m unittest discover -b -q
       - name: Check important information
         env:
           GH_TOKEN: ${{ github.token }}
