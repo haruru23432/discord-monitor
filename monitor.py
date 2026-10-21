@@ -313,6 +313,13 @@ def classify(item):
         return sources.classify(item)
     if re.search(r'\b(rumou?r|leak|speculation|sale|discount|giveaway|contest|esports|owcs|algs|tournament|merchandise)\b|セール|グッズ|大会結果|配信告知', title):
         return None
+    # Official versioned DbD releases include gameplay changes even when named Bugfix.
+    # Match release headings, not version mentions in developer posts or other news.
+    if (item['topic'] == 'dbd' and item['official']
+            and item['source'] in ('dbd-official', 'dbd-patch', 'dbd-website')
+            and re.match(r'^\s*(?:\[?ptb\]?\s*)?\d+\.\d+\.\d+\b', title)
+            and not re.search(r'dev(?:eloper)? update|開発|ptb to live', title)):
+        return '公式パッチ更新' + ('（PTB）' if 'ptb' in title else '')
     text = title + '\n' + body
     cosmetic_title = bool(re.search(r'skins?|cosmetic|outfits?|スキン|コーディネイト|コスメティック', title)
                           or ('collection' in title and 'collection event' not in title))
@@ -351,7 +358,11 @@ def keys(item):
     # headline fallback within its publication day; stable IDs remain timeless.
     if item.get('date'):
         published_day = datetime.fromtimestamp(item['date'], timezone.utc).strftime('%Y-%m-%d')
-        result.add('title-date:' + published_day + ':' + sources.digest(re.sub(r'\W+', '', sources.clean(item['title']).casefold())))
+        headline = sources.clean(item['title']).casefold()
+        # clean() strips [PTB]; retain that environment in the fallback identity.
+        if item['topic'] == 'dbd' and re.search(r'\bptb\b', item['title'], re.I) and not re.search(r'\bptb\b', headline):
+            headline = 'ptb ' + headline
+        result.add('title-date:' + published_day + ':' + sources.digest(re.sub(r'\W+', '', headline)))
     # Verified mirrors with different headlines and no canonical link in Steam text.
     # Exact article IDs only: never merge unrelated updates merely by season/version.
     if item['topic'] == 'ow' and item['official'] and item['gid'] == '1845383656397269':
@@ -582,7 +593,9 @@ def payload(item, user):
     if not re.fullmatch(r'\d{17,20}', user):
         raise ValueError('DISCORD_MENTION_USER_ID is missing or invalid')
     summary = item.get('summary_ja') or sources.japanese_summary(item, item['label'])
-    impacts = {'新キャラクター・新マップ・新チャプター': '利用できるキャラクターや遊べるコンテンツが変わります。',
+    impacts = {'公式パッチ更新': 'ゲームの調整や不具合修正が含まれます。変更内容を確認してください。',
+               '公式パッチ更新（PTB）': '公開テスト版の調整です。通常サーバーへの適用とは異なります。',
+               '新キャラクター・新マップ・新チャプター': '利用できるキャラクターや遊べるコンテンツが変わります。',
                'PC環境・アンチチートの重要変更': 'PC版の起動・不正対策や動作条件に関わる変更です。',
                'ヒーローのロール変更': '編成や役割、これまでのプレイ方法が変わります。',
                'コラボ': '期間限定のコラボ内容と参加予定を確認する必要があります。',
