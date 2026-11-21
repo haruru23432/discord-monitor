@@ -317,7 +317,7 @@ def classify(item):
     # Match release headings, not version mentions in developer posts or other news.
     if (item['topic'] == 'dbd' and item['official']
             and item['source'] in ('dbd-official', 'dbd-patch', 'dbd-website')
-            and re.match(r'^\s*(?:\[?ptb\]?\s*)?\d+\.\d+\.\d+\b', title)
+            and re.match(r'^\s*(?:\[?ptb\]?\s*)?\d+\.\d+\.\d+[a-z]?\b', title)
             and not re.search(r'dev(?:eloper)? update|開発|ptb to live', title)):
         return '公式パッチ更新' + ('（PTB）' if 'ptb' in title else '')
     text = title + '\n' + body
@@ -342,7 +342,7 @@ def classify(item):
             sentence = text[max(0, text.rfind('.', 0, match.start()) + 1):match.end() + 80]
             if not re.search(r'no new|not (?:a |adding )?new|last year|previous season|昨年|前シーズン', sentence):
                 return label
-    if item['official'] and re.search(r'roadmap|developer update|director.s take|designer.?s? notes|ロードマップ|開発者アップデート|ディレクターの視点|デザイナーノート', title):
+    if item['official'] and re.search(r'roadmap|developer update|ptb[ -]to[ -]live update|director.s take|designer.?s? notes|ロードマップ|開発者アップデート|ディレクターの視点|デザイナーノート', title):
         return '開発チームの重要発表・今後の予定'
     if item['official'] and re.search(r'\bevent\b|イベント', title) and not re.search(r'campaign|キャンペーン|配信|セール|skins?|cosmetic|outfits?|スキン|コーディネイト', title):
         return '主要期間限定イベント・モード'
@@ -404,8 +404,8 @@ def keys(item):
     if item['topic'] in sources.GAMES and item['date'] and re.search(r'patch notes|パッチノート', item['title'], re.I):
         day = datetime.fromtimestamp(item['date'], timezone.utc).strftime('%Y-%m-%d')
         result.add('patch-date:' + ('PTB' if 'ptb' in item['title'].lower() else '通常サーバー') + ':' + day)
-    version = re.search(r'\b\d+\.\d+\.\d+\b', item['title'])
-    patch_title = re.search(r'patch notes|パッチノート|^\s*(?:\[?PTB\]?\s*)?\d+\.\d+\.\d+\b', item['title'], re.I)
+    version = re.search(r'\b\d+\.\d+\.\d+[a-z]?\b', item['title'])
+    patch_title = re.search(r'patch notes|パッチノート|^\s*(?:\[?PTB\]?\s*)?\d+\.\d+\.\d+[a-z]?\b', item['title'], re.I)
     developer_title = re.search(r'dev(?:eloper)? update|開発|PTB to Live', item['title'], re.I)
     if item['topic'] == 'dbd' and version and patch_title and not developer_title:
         result.add('patch-version:' + ('PTB' if 'ptb' in item['title'].lower() else '通常サーバー') + ':' + version[0])
@@ -691,7 +691,8 @@ def collect(topics, now, metrics=None):
         url='https://learn.microsoft.com/en-us/windows/release-health/status-windows-11-' + version)
         for version in ('23h2', '24h2', '25h2', '26h1') if 'windows' in topics]
     definitions += [dict(id=t + '-website', topic=t, kind='website', official=True) for t in sources.GAMES if t in topics]
-    definitions += [dict(id=t + '-patch', topic=t, kind='patch', official=True) for t in ('ow', 'dbd') if t in topics]
+    # BHVR closed its forums in November 2026. DbD continues via official Steam/news.
+    definitions += [dict(id=t + '-patch', topic=t, kind='patch', official=True) for t in ('ow',) if t in topics]
     def fetch(source):
         topic = source['topic']
         try:
@@ -700,12 +701,8 @@ def collect(topics, now, metrics=None):
             elif source['kind'] == 'website':
                 rows = fetch_news(topic, now)
             elif source['kind'] == 'patch':
-                if topic == 'ow':
-                    import monitor_ow_source
-                    data = monitor_ow_source.fetch_patches(now - 14 * DAY)
-                else:
-                    import monitor_dbd_source
-                    data = monitor_dbd_source.fetch_bhvr(now - 14 * DAY)
+                import monitor_ow_source
+                data = monitor_ow_source.fetch_patches(now - 14 * DAY)
                 rows = sources.FetchRows([sources.article(source, r['title'], r['url'], r['contents'], r['date'], r['gid']) for r in data])
                 rows.errors.update(getattr(data, 'errors', {}))
             else:
@@ -842,7 +839,7 @@ def main():
         return bool(unavailable or failures)
     store = Store()
     state = store.load(now)
-    days = 14 if os.environ.get('RECOVERY_DAYS') == '14' else 7
+    days = 30 if mode == 'dbd' and os.environ.get('RECOVERY_DAYS') == '30' else (14 if os.environ.get('RECOVERY_DAYS') == '14' else 7)
     state = plan(state, items, now, days, metrics)
     state['checked'][mode] = now
     state['source_failures'][mode] = failures
