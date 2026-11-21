@@ -10,9 +10,9 @@ on:
         type: boolean
         default: false
       recovery_days:
-        description: '再評価期間。通常7日、通知漏れ補完は14日'
+        description: '再評価期間。通常7日、通知漏れ補完は14日または30日'
         type: choice
-        options: ['7', '14']
+        options: ['7', '14', '30']
         default: '7'
 
 permissions:
